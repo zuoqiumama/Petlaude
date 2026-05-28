@@ -24,6 +24,7 @@
     "test": "node test/run-tests.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
+    "export-app-icons": "node scripts/export-app-icons.js",
     "install:claude-hooks": "node hooks/install.js",
     "uninstall:claude-hooks": "node hooks/uninstall.js",
     "install:gemini-hooks": "node hooks/gemini-install.js",
