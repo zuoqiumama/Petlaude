@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/tray-icon.png" width="128" alt="Petlaude">
+  <img src="assets/icons/512x512.png" width="128" alt="Petlaude">
 </p>
 <h1 align="center">Petlaude</h1>
 <p align="center">
