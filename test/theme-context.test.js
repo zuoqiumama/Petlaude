@@ -135,6 +135,24 @@ test("built-in contexts prefer theme-local assets and expose relative renderer p
   }
 });
 
+test("renderer config exposes the file drag catch reaction binding", () => {
+  const fixture = makeRoot();
+  try {
+    const theme = makeTheme({
+      reactions: {
+        drag: { file: "drag.svg" },
+        fileDropCatch: { file: "catch.svg" },
+      },
+    });
+    const ctx = createThemeContext(theme, fixture);
+
+    assert.deepStrictEqual(ctx.getRendererConfig().fileDropCatch, { file: "catch.svg" });
+    assert.deepStrictEqual(ctx.getHitRendererConfig().reactions.fileDropCatch, { file: "catch.svg" });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("external renderer asset path keeps the legacy default when file URL is absent", () => {
   const fixture = makeRoot();
   try {

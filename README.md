@@ -10,6 +10,18 @@
 
 ## What's New in Petlaude
 
+### Task Complete Bubble
+
+When your AI agent finishes a task, a notification bubble pops up with a "Go to" button that focuses the agent's terminal window — no more hunting for the right tab. Works with Claude Code, Codex, Gemini, Copilot, and every supported agent. Smart dedup and cooldown prevent spam during rapid session restarts.
+
+### Pet Double-Click Action
+
+Configure what happens when you double-click the desktop pet — launch Codex, Claude, your editor, or any executable. Choose between Terminal mode (for CLI agents) and Direct mode (for GUI apps), with an optional default workspace folder. The existing pet reaction animation still plays alongside your custom action.
+
+### File Drag-and-Drop
+
+Drag files and folders onto the pet! A directional catch animation plays as you hover, then a smart bubble offers context-aware actions: focus the matching agent session, open the dashboard, launch your configured pet click action, or copy paths to the clipboard.
+
 ### Borderless Mac-style Windows
 
 Dashboard and Settings windows have been redesigned with a modern borderless look — rounded corners, smooth title bars, and content that blends naturally into the window frame. Traffic-light window controls (close / minimize / maximize) replace clunky native title bars.
@@ -33,7 +45,8 @@ A new appearance mode lets you switch between light, dark, and system-following 
 Track your AI coding sessions with time and token statistics directly in the dashboard:
 
 - **Usage bar chart** — daily agent usage broken down by agent (Claude Code, Codex, Gemini, Copilot, etc.), showing how much time you spend with each
-- **Trend line** — overlays a cumulative trend line on the bar chart so you can spot usage patterns over the week
+- **Trend line** — smooth monotone cubic interpolation curves overlay session time and token trends on the bar chart
+- **Dual-axis labels** — token counts on the left, time duration on the right, with clean grid lines for readability
 - **Usage hover** — hover over the desktop pet to see a quick popup with today's agent breakdown via a compact pie/bar chart
 
 <p align="center">
@@ -43,6 +56,13 @@ Track your AI coding sessions with time and token statistics directly in the das
 
 Sessions and time are persisted in a local JSONL ledger, so your stats survive restarts.
 
+### Windows Terminal Focus Reliability
+
+The focus system (used by "Go to" buttons and session switching) has been hardened for Windows Terminal with a multi-layered fallback strategy: MainWindowHandle fast path → process ancestor chain walk → any WindowsTerminal process → AppActivate last resort. This dramatically improves the reliability of jumping to the right agent window.
+
+### Permission Bubble Agent Labels
+
+Permission bubbles now show the agent's display name ("Claude Code Permission Request" instead of the generic title), making it clear which agent is asking for access — especially useful when running multiple agents simultaneously.
 ---
 
 ## Pet Features

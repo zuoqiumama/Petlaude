@@ -64,6 +64,7 @@ function createThemeContext(theme, options = {}) {
     const trustedScriptedSvgFiles = theme._builtin && theme.trustedRuntime
       ? (theme.trustedRuntime.scriptedSvgFiles || [])
       : [];
+    const fileDropCatch = theme.reactions && theme.reactions.fileDropCatch;
     return {
       viewBox: theme.viewBox,
       miniModeViewBox: theme.miniMode ? theme.miniMode.viewBox : null,
@@ -75,6 +76,9 @@ function createThemeContext(theme, options = {}) {
       glyphFlips: theme.miniMode ? theme.miniMode.glyphFlips : {},
       miniFlipAssets: theme.miniMode ? !!theme.miniMode.flipAssets : false,
       dragSvg: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : null,
+      fileDropCatch: fileDropCatch && typeof fileDropCatch === "object"
+        ? { ...fileDropCatch }
+        : fileDropCatch || null,
       idleFollowSvg: theme.states.idle[0],
       eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],

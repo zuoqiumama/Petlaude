@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage } = require("electron");
+const { app, BrowserWindow, screen, ipcMain, globalShortcut, nativeTheme, dialog, shell, nativeImage, clipboard } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { EventEmitter } = require("events");
@@ -21,6 +21,8 @@ const { createTelegramApprovalSidecar } = require("./telegram-approval-sidecar")
 const telegramApprovalSettings = require("./telegram-approval-settings");
 const initUpdateBubble = require("./update-bubble");
 const { registerUpdateBubbleIpc } = initUpdateBubble;
+const initFileDropBubble = require("./file-drop-bubble");
+const { registerFileDropBubbleIpc } = initFileDropBubble;
 const initUsageHover = require("./usage-hover");
 const createSettingsAnimationOverridesMain = require("./settings-animation-overrides-main");
 const { registerSettingsAnimationOverridesIpc } = createSettingsAnimationOverridesMain;
@@ -50,6 +52,11 @@ const {
 } = require("./session-focus");
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { getAllAgents } = require("../agents/registry");
+const { launchPetClickAction } = require("./pet-click-launcher");
+const {
+  buildFileDropState,
+  executeFileDropAction,
+} = require("./file-drop-actions");
 
 // ── Autoplay policy: allow sound playback without user gesture ──
 // MUST be set before any BrowserWindow is created (before app.whenReady)
@@ -696,12 +703,26 @@ function applyPetWindowBounds(bounds) { return petWindowRuntime.applyPetWindowBo
 function applyPetWindowPosition(x, y) { return petWindowRuntime.applyPetWindowPosition(x, y); }
 
 function syncHitStateAfterLoad() {
+  const petClickAction = _settingsController.get("petClickAction");
   sendToHitWin("hit-state-sync", {
     currentSvg: _state.getCurrentSvg(),
     currentState: _state.getCurrentState(),
     miniMode: _mini.getMiniMode(),
     dndEnabled: doNotDisturb,
+    petClickActionEnabled: !!(petClickAction && petClickAction.enabled && petClickAction.executablePath),
   });
+}
+
+function launchConfiguredPetClickAction(workspacePathOverride = null) {
+  const config = _settingsController.get("petClickAction");
+  const launchConfig = workspacePathOverride && config && typeof config === "object"
+    ? { ...config, workspacePath: workspacePathOverride }
+    : config;
+  const result = launchPetClickAction(launchConfig);
+  if (result && result.status === "error") {
+    console.warn("Clawd: pet click action failed:", result.message);
+  }
+  return result;
 }
 
 function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
@@ -975,6 +996,25 @@ const _permCtx = {
       fallbackEntry: options.fallbackEntry || getPendingPermissionFocusEntry(sessionId),
     });
   },
+  // Fast path: call focusTerminalWindow directly with a pre-built request.
+  // Used by task-complete bubble which already has all focus data in the
+  // perm entry — skips session lookup, focus target resolution, and the
+  // session/fallback merge that focusDashboardSession performs.
+  focusTerminalDirect: (request) => {
+    focusTerminalWindow(request);
+  },
+  allowSetForegroundWindow: (pid) => {
+    if (typeof _allowSetForeground === "function") {
+      try { _allowSetForeground(pid); } catch {}
+    }
+  },
+  checkAgentTerminalFocused: (sourcePid, callback) => {
+    if (typeof checkAgentTerminalFocused === "function") {
+      checkAgentTerminalFocused(sourcePid, callback);
+    } else if (typeof callback === "function") {
+      callback(false);
+    }
+  },
   getSettingsSnapshot: () => _settingsController.getSnapshot(),
   subscribeShortcuts: (cb) => _settingsController.subscribeKey("shortcuts", (_value, snapshot) => {
     if (typeof cb === "function") cb(snapshot);
@@ -988,7 +1028,7 @@ const _permCtx = {
   },
 };
 const _perm = initPermission(_permCtx);
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodePermission } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, showTaskCompleteBubble, syncPermissionShortcuts, replyOpencodePermission } = _perm;
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -1036,17 +1076,38 @@ const {
   syncVisibility: syncUpdateBubbleVisibility,
 } = _updateBubble;
 
+const _fileDropBubbleCtx = {
+  get win() { return win; },
+  get petHidden() { return petWindowRuntime.isPetHidden(); },
+  getPetWindowBounds,
+  getNearestWorkArea,
+  getHitRectScreen,
+  getHudReservedOffset: () => getSessionHudReservedOffset(),
+  guardAlwaysOnTop,
+  reapplyMacVisibility,
+};
+const _fileDropBubble = initFileDropBubble(_fileDropBubbleCtx);
+const {
+  showFileDropBubble,
+  hideFileDropBubble,
+  repositionFileDropBubble,
+  syncVisibility: syncFileDropBubbleVisibility,
+} = _fileDropBubble;
+
 floatingWindowRuntime = createFloatingWindowRuntime({
   getPendingPermissions: () => pendingPermissions,
   repositionPermissionBubbles: () => repositionBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
+  repositionFileDropBubble: () => repositionFileDropBubble(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionUsageHover: () => repositionUsageHover(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   syncUsageHoverVisibility: () => syncUsageHoverVisibility(),
   syncUpdateBubbleVisibility: () => syncUpdateBubbleVisibility(),
+  syncFileDropBubbleVisibility: () => syncFileDropBubbleVisibility(),
   hideUsageHover: () => hideUsageHover(),
   hideUpdateBubble: () => hideUpdateBubble(),
+  hideFileDropBubble: () => hideFileDropBubble(),
   keepOutOfTaskbar,
 });
 
@@ -1140,6 +1201,7 @@ const _stateCtx = {
   dismissPermissionsForDnd: (...args) => _perm.dismissPermissionsForDnd(...args),
   showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
   clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
+  showTaskCompleteBubble: (...args) => showTaskCompleteBubble(...args),
   // state.js needs this to gate startKimiPermissionPoll symmetrically with
   // shouldSuppressKimiNotifyBubble in permission.js — without it the
   // permissionsEnabled=false toggle would silently rebuild holds on every
@@ -1250,7 +1312,7 @@ const { startMainTick, resetIdleTimer } = _tick;
 
 // ── Terminal focus — delegated to src/focus.js ──
 const _focus = require("./focus")({ _allowSetForeground, focusLog });
-const { initFocusHelper, killFocusHelper, focusTerminalWindow, clearMacFocusCooldownTimer } = _focus;
+const { initFocusHelper, killFocusHelper, focusTerminalWindow, checkAgentTerminalFocused, clearMacFocusCooldownTimer } = _focus;
 
 function getFocusableLocalHudSessionIds() {
   if (!_state || typeof _state.buildSessionSnapshot !== "function") return [];
@@ -1282,6 +1344,7 @@ function focusDashboardSession(sessionId, options = {}) {
     : null;
   if (!session && !fallbackEntry) {
     focusLog(`focus result branch=none reason=session-not-found source=${requestSource} sid=${id}`);
+    console.warn(`[Clawd] focusDashboardSession: session not found and no fallback, sid=${id}`);
     return;
   }
 
@@ -1301,6 +1364,7 @@ function focusDashboardSession(sessionId, options = {}) {
   }
 
   if (focusTarget.type === "terminal") {
+    console.warn(`[Clawd] focusDashboardSession: focusing terminal sourcePid=${focusEntry.sourcePid || "none"} sid=${id}`);
     focusTerminalSession(focusEntry, id, requestSource);
     return;
   }
@@ -1309,7 +1373,38 @@ function focusDashboardSession(sessionId, options = {}) {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
     focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
+    console.warn(`[Clawd] focusDashboardSession: no sourcePid available, sid=${id} focusEntry=${JSON.stringify({sp: focusEntry.sourcePid, host: focusEntry.host, platform: focusEntry.platform})}`);
   }
+}
+
+function isPetClickActionEnabled() {
+  const petClickAction = _settingsController.get("petClickAction");
+  return !!(petClickAction && petClickAction.enabled && petClickAction.executablePath);
+}
+
+function handleDroppedFiles(payload) {
+  const dropState = buildFileDropState(payload, {
+    lang,
+    focusableSessionIds: getFocusableLocalHudSessionIds(),
+    petClickActionEnabled: isPetClickActionEnabled(),
+  });
+
+  Promise.resolve(showFileDropBubble(dropState.bubble))
+    .then((result) => {
+      const action = result && result.action ? result.action : dropState.bubble.defaultAction;
+      const outcome = executeFileDropAction(action, dropState, {
+        clipboard,
+        focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+        showDashboard: () => showDashboard(),
+        launchPetClickAction: (workspacePath) => launchConfiguredPetClickAction(workspacePath),
+      });
+      if (outcome && outcome.status === "error") {
+        console.warn("Clawd: file drop action failed:", outcome.message);
+      }
+    })
+    .catch((err) => {
+      console.warn("Clawd: failed to handle dropped files:", err && err.message);
+    });
 }
 
 function hideDashboardSession(sessionId) {
@@ -1416,6 +1511,7 @@ const _serverCtx = {
   addPendingPermission,
   removePendingPermission,
   showPermissionBubble,
+  showTaskCompleteBubble,
   maybeStartRemoteApproval,
   replyOpencodePermission,
   permLog,
@@ -2078,6 +2174,11 @@ const settingsEffectRouter = createSettingsEffectRouter({
   logWarn: console.warn,
 });
 settingsEffectRouter.start();
+_settingsController.subscribeKey("petClickAction", (value) => {
+  sendToHitWin("hit-state-sync", {
+    petClickActionEnabled: !!(value && value.enabled && value.executablePath),
+  });
+});
 
 // ── Borderless window controls (dashboard & settings) ──
 ipcMain.on("window:minimize", (event) => {
@@ -2437,6 +2538,8 @@ function createWindow() {
         _sessionHud.revealFromPet();
       }
     },
+    launchPetClickAction: () => launchConfiguredPetClickAction(),
+    handleDroppedFiles: (payload) => handleDroppedFiles(payload),
   });
 
   registerPermissionIpc({
@@ -2447,6 +2550,11 @@ function createWindow() {
   registerUpdateBubbleIpc({
     ipcMain,
     updateBubble: _updateBubble,
+  });
+
+  registerFileDropBubbleIpc({
+    ipcMain,
+    fileDropBubble: _fileDropBubble,
   });
 
   initFocusHelper();

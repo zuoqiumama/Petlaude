@@ -1,6 +1,8 @@
 // src/state.js — State machine + session management + DND + wake poll
 // Extracted from main.js L158-240, L299-505, L544-960
 
+const path = require("path");
+
 let screen;
 try { ({ screen } = require("electron")); } catch { screen = null; }
 const {
@@ -1211,6 +1213,42 @@ function updateSession(sessionId, state, event, opts = {}) {
       const displayState = resolveDisplayState();
       setState(displayState, getSvgOverride(displayState));
       return;
+    }
+    // ── Task-complete bubble: show in sync with "attention" animation ──
+    // Hooked directly into the ONESHOT path so the bubble fires at the
+    // exact same moment as the pet's attention/complete animation. All
+    // session data is available from local variables — no session lookup
+    // needed, so focus data (sourcePid, wtHwnd, etc.) is always correct.
+    if (
+      state === "attention"
+      && !srcHeadless
+      && !srcHost
+      && event !== "SessionEnd"   // SessionEnd handles bubble in server route
+      && typeof ctx.showTaskCompleteBubble === "function"
+    ) {
+      const agentName = srcAgentId === "claude-code" ? "Claude Code"
+        : srcAgentId === "codex" ? "Codex"
+        : srcAgentId || "Agent";
+      ctx.showTaskCompleteBubble({
+        sessionId,
+        agentId: srcAgentId,
+        agentName,
+        sessionFolder: srcCwd ? path.basename(srcCwd) : "",
+        taskSummary: srcSessionTitle || null,
+        _sessData: {
+          sourcePid: srcPid,
+          wtHwnd: srcWtHwnd,
+          cwd: srcCwd,
+          agentPid: srcAgentPid,
+          pidChain: srcPidChain,
+          host: srcHost,
+          platform: srcPlatform,
+          model: srcModel,
+          editor: srcEditor,
+          codexOriginator: srcCodexOriginator,
+          codexSource: srcCodexSource,
+        },
+      });
     }
     setState(state);
     return;

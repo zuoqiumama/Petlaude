@@ -137,6 +137,30 @@ describe("validateThemeShape", () => {
     assert.ok(result.errors.some((error) => error.includes("missing.svg")));
   });
 
+  it("reports missing directional file drag catch assets", () => {
+    makeFixture({
+      builtinThemes: [{
+        id: "clawd",
+        json: validThemeJson({
+          name: "Clawd",
+          reactions: {
+            fileDropCatch: {
+              left: "catch-left.svg",
+              center: "catch-center.svg",
+              right: "missing-catch-right.svg",
+            },
+          },
+        }),
+      }],
+      centralAssets: [...REQUIRED_FILES, "catch-left.svg", "catch-center.svg"],
+    });
+
+    const result = themeLoader.validateThemeShape("clawd");
+
+    assert.strictEqual(result.ok, false);
+    assert.ok(result.errors.some((error) => error.includes("missing-catch-right.svg")));
+  });
+
   it("reports override-introduced missing assets", () => {
     makeFixture({
       builtinThemes: [{ id: "clawd", json: validThemeJson({ name: "Clawd" }) }],

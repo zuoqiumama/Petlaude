@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", () => cb()),
   onEndDragReaction: (cb) => ipcRenderer.on("end-drag-reaction", () => cb()),
   onPlayClickReaction: (cb) => ipcRenderer.on("play-click-reaction", (_, svg, duration) => cb(svg, duration)),
+  onStartFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-start", (_, payload) => cb(payload)),
+  onUpdateFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-update", (_, payload) => cb(payload)),
+  onEndFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-end", (_, reason) => cb(reason)),
   // Sound playback (from main)
   onPreloadSounds: (cb) => ipcRenderer.on("preload-sounds", (_, payload) => cb(payload)),
   onPlaySound: (cb) => ipcRenderer.on("play-sound", (_, payload) => cb(payload)),

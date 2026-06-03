@@ -209,6 +209,9 @@
     "drag": {
       "file": "clawd-react-drag.svg"
     },
+    "fileDropCatch": {
+      "file": "clawd-file-drop-catch.svg"
+    },
     "clickLeft": {
       "file": "clawd-react-left.svg",
       "duration": 2500

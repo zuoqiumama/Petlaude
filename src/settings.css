@@ -1698,6 +1698,42 @@ html, body {
   outline-offset: 2px;
 }
 
+.pet-click-path-control {
+  min-width: 0;
+  max-width: 460px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.pet-click-path-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.pet-click-path-value.empty {
+  color: var(--text-tertiary);
+  font-family: inherit;
+}
+.pet-click-mode {
+  min-width: 190px;
+}
+@media (max-width: 760px) {
+  .pet-click-path-control {
+    width: 100%;
+    max-width: none;
+    grid-template-columns: 1fr auto auto;
+  }
+}
+
 /* ── Shortcuts ── */
 .shortcuts-head {
   display: flex;

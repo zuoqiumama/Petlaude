@@ -103,6 +103,11 @@ describe("theme schema defaults and normalization", () => {
       reactions: {
         drag: { file: "../drag.svg" },
         double: { files: ["nested/a.svg", "../b.svg"] },
+        fileDropCatch: {
+          left: "../catch-left.svg",
+          center: "nested/catch-center.svg",
+          right: "catch-right.svg",
+        },
       },
       workingTiers: [{ minSessions: 2, file: "../tier.svg" }],
       idleAnimations: [{ file: "../look.svg", duration: 100 }],
@@ -118,6 +123,11 @@ describe("theme schema defaults and normalization", () => {
     assert.strictEqual(theme.sounds.complete, "complete.wav");
     assert.strictEqual(theme.reactions.drag.file, "drag.svg");
     assert.deepStrictEqual(theme.reactions.double.files, ["a.svg", "b.svg"]);
+    assert.deepStrictEqual(theme.reactions.fileDropCatch, {
+      left: "catch-left.svg",
+      center: "catch-center.svg",
+      right: "catch-right.svg",
+    });
     assert.strictEqual(theme.workingTiers[0].file, "tier.svg");
     assert.strictEqual(theme.idleAnimations[0].file, "look.svg");
     assert.deepStrictEqual(theme.displayHintMap, { "../old.svg": "new.svg" });
@@ -164,12 +174,19 @@ describe("theme schema defaults and normalization", () => {
       workingTiers: [{ file: "../tier.svg" }],
       jugglingTiers: [{ file: "juggling.svg" }],
       idleAnimations: [{ file: "idle-look.svg" }],
-      reactions: { drag: { file: "drag.svg" }, double: { files: ["drag.svg", "../double.svg"] } },
+      reactions: {
+        drag: { file: "drag.svg" },
+        double: { files: ["drag.svg", "../double.svg"] },
+        fileDropCatch: { left: "catch-left.svg", center: "../catch-center.svg", right: "catch-right.svg" },
+      },
       displayHintMap: { old: "../hint.svg" },
       updateVisuals: { checking: "../checking.svg" },
     });
 
     assert.deepStrictEqual(files.sort(), [
+      "catch-center.svg",
+      "catch-left.svg",
+      "catch-right.svg",
       "checking.svg",
       "double.svg",
       "drag.svg",

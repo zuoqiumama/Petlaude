@@ -50,6 +50,46 @@ const TOKEN_USAGE_FIELD_NAMES = [
   "totalTokenCount",
 ];
 
+function resolveCodexHome() {
+  const configured = process.env.CODEX_HOME;
+  if (typeof configured !== "string") return null;
+  const trimmed = configured.trim();
+  return trimmed || null;
+}
+
+function pickTokenUsageSource(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const info = payload.info && typeof payload.info === "object" ? payload.info : null;
+  const candidates = [
+    info && info.last_token_usage,
+    info && info.lastTokenUsage,
+    payload.last_token_usage,
+    payload.lastTokenUsage,
+    payload.token_usage,
+    payload.tokenUsage,
+    payload.usage,
+    payload.tokens,
+    info && info.total_token_usage,
+    info && info.totalTokenUsage,
+    payload.total_token_usage,
+    payload.totalTokenUsage,
+    payload,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object") return candidate;
+  }
+  return null;
+}
+
+function extractNumericTokenFields(source) {
+  if (!source || typeof source !== "object") return null;
+  const out = {};
+  for (const key of TOKEN_USAGE_FIELD_NAMES) {
+    if (Number.isFinite(source[key])) out[key] = source[key];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 class CodexLogMonitor {
   /**
    * @param {object} agentConfig - codex.js config (logConfig + logEventMap)
@@ -65,7 +105,7 @@ class CodexLogMonitor {
     this._tracked = new Map();
     this._retiredTracked = new Map();
     this._baseDir = this._resolveBaseDir();
-    this._codexDir = options.codexDir || null;
+    this._codexDir = options.codexDir || resolveCodexHome() || null;
     this._recentDayDirsCache = [];
     this._recentDayDirsCacheAt = 0;
     this._recentDayDirsDateKey = "";
@@ -76,6 +116,11 @@ class CodexLogMonitor {
 
   _resolveBaseDir() {
     const dir = this._config.logConfig.sessionDir;
+    const codexHome = resolveCodexHome();
+    if (codexHome && (dir === "~/.codex" || dir.startsWith("~/.codex/") || dir.startsWith("~\\.codex\\"))) {
+      const suffix = dir.slice("~/.codex".length).replace(/^[\\/]/, "");
+      return suffix ? path.join(codexHome, suffix) : codexHome;
+    }
     if (dir.startsWith("~")) {
       return path.join(os.homedir(), dir.slice(1));
     }
@@ -418,7 +463,7 @@ class CodexLogMonitor {
       const usageState = tracked.lastState || "idle";
       this._emitStateChange(tracked, usageState, key, {
         tokenUsage,
-        usageEventId: `${tracked.sessionId}:${key}:${tracked.eventSeq}`,
+        usageEventId: this._buildTokenUsageEventId(tracked, key, payload, tokenUsage),
         preserveState: true,
       });
       return;
@@ -586,20 +631,21 @@ class CodexLogMonitor {
   }
 
   _extractExplicitTokenUsage(payload) {
-    if (!payload || typeof payload !== "object") return null;
-    let source = null;
-    for (const key of ["token_usage", "tokenUsage", "usage", "tokens"]) {
-      if (payload[key] && typeof payload[key] === "object") {
-        source = payload[key];
-        break;
-      }
-    }
-    if (!source) source = payload;
-    const out = {};
-    for (const key of TOKEN_USAGE_FIELD_NAMES) {
-      if (Number.isFinite(source[key])) out[key] = source[key];
-    }
-    return Object.keys(out).length ? out : null;
+    return extractNumericTokenFields(pickTokenUsageSource(payload));
+  }
+
+  _buildTokenUsageEventId(tracked, key, payload, tokenUsage) {
+    const totalUsage = payload
+      && payload.info
+      && typeof payload.info === "object"
+      && extractNumericTokenFields(payload.info.total_token_usage || payload.info.totalTokenUsage);
+    if (!totalUsage) return `${tracked.sessionId}:${key}:${tracked.eventSeq}`;
+    const source = totalUsage || tokenUsage || {};
+    const parts = TOKEN_USAGE_FIELD_NAMES
+      .filter((field) => Number.isFinite(source[field]))
+      .map((field) => `${field}=${source[field]}`);
+    if (!parts.length) parts.push(`seq=${tracked.eventSeq}`);
+    return `${tracked.sessionId}:${key}:${parts.join(",")}`;
   }
 
   // Extract UUID from rollout filename

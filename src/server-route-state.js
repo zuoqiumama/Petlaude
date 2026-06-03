@@ -11,6 +11,18 @@ const {
 } = require("./server-permission-utils");
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeTokenUsage } = require("./usage-analytics");
+const { getAgent } = require("../agents/registry");
+
+function displayNameForAgent(agentId) {
+  if (!agentId) return "Agent";
+  const agent = getAgent(agentId);
+  if (agent && typeof agent.name === "string" && agent.name) return agent.name;
+  // Fallback: prettify the id
+  const id = String(agentId);
+  if (id === "codex") return "Codex";
+  if (id === "claude-code") return "Claude Code";
+  return id;
+}
 
 // /state POST body size cap. Raised from 1024 to 4096 to give new fields
 // (session_title) headroom on top of cwd / pid_chain / host / etc. Still a
@@ -195,7 +207,39 @@ function handleStatePost(req, res, options) {
           };
           if (tokenUsage) updateOptions.tokenUsage = tokenUsage;
           if (usageEventId) updateOptions.usageEventId = usageEventId;
+
+          // SessionEnd deletes the session inside updateSession. Snapshot
+          // focus data beforehand so the bubble's "转到" button still works.
+          const _sessDataForBubble = (event === "SessionEnd" && ctx.sessions)
+            ? (() => { const s = ctx.sessions.get(sid); return s ? { ...s } : null; })()
+            : null;
+
           ctx.updateSession(sid, state, event, updateOptions);
+
+          // Show task-complete bubble on SessionEnd events.
+          // Stop events are handled inside updateSession's ONESHOT path,
+          // which fires in sync with the pet's attention animation and has
+          // all session data available from local variables.
+          // SessionEnd returns early from updateSession (before the ONESHOT
+          // path), so it's handled here.
+          if (
+            event === "SessionEnd" &&
+            !headless &&
+            !host &&
+            typeof ctx.showTaskCompleteBubble === "function"
+          ) {
+            const sessData = _sessDataForBubble || null;
+            const sessionFolder = (sessData && sessData.cwd) ? pathApi.basename(sessData.cwd) : (cwd ? pathApi.basename(cwd) : "");
+            const agentName = displayNameForAgent(agentId);
+            ctx.showTaskCompleteBubble({
+              sessionId: sid,
+              agentId,
+              agentName,
+              sessionFolder,
+              taskSummary: sessionTitle || null,
+              _sessData: sessData,
+            });
+          }
         }
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");

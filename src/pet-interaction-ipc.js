@@ -5,6 +5,42 @@ function requiredDependency(value, name) {
   return value;
 }
 
+function clampUnit(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-1, Math.min(1, n));
+}
+
+function sanitizeFileDragDirection(value) {
+  return value === "left" || value === "right" || value === "center" ? value : "center";
+}
+
+function sanitizeFileDragPayload(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  return {
+    x: clampUnit(source.x),
+    y: clampUnit(source.y),
+    direction: sanitizeFileDragDirection(source.direction),
+  };
+}
+
+function sanitizeFileDragEndReason(reason) {
+  return reason === "drop" || reason === "leave" || reason === "cancel" ? reason : "cancel";
+}
+
+function sanitizeDroppedFilesPayload(payload) {
+  const source = payload && typeof payload === "object" && Array.isArray(payload.paths) ? payload.paths : [];
+  const paths = [];
+  for (const raw of source) {
+    if (typeof raw !== "string") continue;
+    const value = raw.trim();
+    if (!value || value.length > 4096) continue;
+    paths.push(value);
+    if (paths.length >= 20) break;
+  }
+  return { paths };
+}
+
 function registerPetInteractionIpc(options = {}) {
   const ipcMain = requiredDependency(options.ipcMain, "ipcMain");
   const showContextMenu = requiredDependency(options.showContextMenu, "showContextMenu");
@@ -46,6 +82,8 @@ function registerPetInteractionIpc(options = {}) {
   const showDashboard = requiredDependency(options.showDashboard, "showDashboard");
   const focusSession = requiredDependency(options.focusSession, "focusSession");
   const revealSessionHud = requiredDependency(options.revealSessionHud, "revealSessionHud");
+  const launchPetClickAction = requiredDependency(options.launchPetClickAction, "launchPetClickAction");
+  const handleDroppedFiles = requiredDependency(options.handleDroppedFiles, "handleDroppedFiles");
   const setLowPowerIdlePaused = requiredDependency(
     options.setLowPowerIdlePaused,
     "setLowPowerIdlePaused"
@@ -93,6 +131,18 @@ function registerPetInteractionIpc(options = {}) {
   on("play-click-reaction", (_event, svg, duration) => {
     sendToRenderer("play-click-reaction", svg, duration);
   });
+  on("file-drag-catch-start", (_event, payload) => {
+    sendToRenderer("file-drag-catch-start", sanitizeFileDragPayload(payload));
+  });
+  on("file-drag-catch-update", (_event, payload) => {
+    sendToRenderer("file-drag-catch-update", sanitizeFileDragPayload(payload));
+  });
+  on("file-drag-catch-end", (_event, reason) => {
+    sendToRenderer("file-drag-catch-end", sanitizeFileDragEndReason(reason));
+  });
+  on("file-drop", (_event, payload) => {
+    handleDroppedFiles(sanitizeDroppedFilesPayload(payload));
+  });
 
   on("drag-end", () => {
     try {
@@ -126,6 +176,10 @@ function registerPetInteractionIpc(options = {}) {
     revealSessionHud();
   });
 
+  on("pet-interaction:launch-click-action", () => {
+    launchPetClickAction();
+  });
+
   on("focus-terminal", () => {
     const focusableIds = getFocusableLocalHudSessionIds();
     focusLog(`focus request source=pet-body sid=- focusableCount=${focusableIds.length}`);
@@ -153,4 +207,5 @@ function registerPetInteractionIpc(options = {}) {
 
 module.exports = {
   registerPetInteractionIpc,
+  sanitizeDroppedFilesPayload,
 };

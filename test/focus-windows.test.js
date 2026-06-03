@@ -59,14 +59,21 @@ function loadFocusWithMock(options = {}) {
 }
 
 describe("Windows terminal focus", () => {
-  it("does not generate the blind first-WindowsTerminal fallback", () => {
+  it("includes a last-resort any-WindowsTerminal fallback for focus reliability", () => {
     const { initFocus, cleanup } = loadFocusWithMock();
     try {
       const focus = initFocus({});
       const cmd = focus.__test.makeFocusCmd(1234, ["repo"]);
 
+      // Primary WT title-matching still uses Get-Process -Name $wtName
       assert.match(cmd, /Get-Process -Name \$wtName/);
-      assert.doesNotMatch(cmd, /Select-Object -First 1/);
+      // The new last-resort fallback uses Select-Object -First 1 to find
+      // any visible WindowsTerminal window when title/PID matching fails
+      assert.match(cmd, /Select-Object -First 1/);
+      // Verify the new direct MainWindowHandle fallback is present
+      assert.match(cmd, /direct-focus:/);
+      // Verify the AppActivate fallback is present
+      assert.match(cmd, /appactivate:/);
     } finally {
       cleanup();
     }

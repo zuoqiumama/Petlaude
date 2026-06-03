@@ -76,6 +76,10 @@ function querySupersetWorkspaceId(dbPath, cwd, callback) {
 module.exports = function initFocus(ctx) {
 
 const FOCUS_RESULT_PREFIX = "__CLAWD_FOCUS_RESULT__ ";
+const FOCUS_CHECK_PREFIX = "__CLAWD_FOCUS_CHECK__ ";
+
+// Pending focus-check callbacks, keyed by marker
+const focusCheckCallbacks = new Map();
 
 const PS_FOCUS_ADDTYPE = `
 Add-Type @"
@@ -252,16 +256,26 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             } elseif ($matches.Count -gt 1) {
                 $reason = 'wt-parent-title-ambiguous'
             } else {
-                $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
-                if ($pidWindows.Count -eq 1) {
-                    [WinFocus]::Focus($pidWindows[0])
-                    Save-ClawdFocusCache $pidWindows[0]
+                # Fast path: title matching found zero matches.
+                # Try MainWindowHandle directly before falling back to
+                # Get-ClawdVisiblePidWindows (which does its own EnumWindows).
+                if ([WinFocus]::IsUsableWindow($proc.MainWindowHandle)) {
+                    [WinFocus]::Focus($proc.MainWindowHandle)
+                    Save-ClawdFocusCache $proc.MainWindowHandle
                     $focused = $true
-                    $reason = 'wt-parent-pid-window'
-                } elseif ($pidWindows.Count -gt 1) {
-                    $reason = 'wt-parent-pid-window-ambiguous'
+                    $reason = 'wt-parent-mainwindow-fast'
                 } else {
-                    $reason = 'wt-parent-no-pid-window'
+                    $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
+                    if ($pidWindows.Count -eq 1) {
+                        [WinFocus]::Focus($pidWindows[0])
+                        Save-ClawdFocusCache $pidWindows[0]
+                        $focused = $true
+                        $reason = 'wt-parent-pid-window'
+                    } elseif ($pidWindows.Count -gt 1) {
+                        $reason = 'wt-parent-pid-window-ambiguous'
+                    } else {
+                        $reason = 'wt-parent-no-pid-window'
+                    }
                 }
             }
         } else {
@@ -459,6 +473,75 @@ if (-not $focused -and $consoleShimSkipped) {
         $reason = 'console-window-shim-skip'
     }
 }
+# ── Direct MainWindowHandle fallback ──
+# Get-Process reliably returns MainWindowHandle even when EnumWindows can't
+# enumerate CASCADIA_HOSTING_WINDOW_CLASS windows. We walk the ancestor chain
+# and focus the first process with a visible main window.
+if (-not $focused) {
+    $directPid = ${sourcePid}
+    for ($j = 0; $j -lt 12; $j++) {
+        $dp = Get-Process -Id $directPid -ErrorAction SilentlyContinue
+        if (-not $dp) { break }
+        if ($dp.MainWindowHandle -ne 0) {
+            try {
+                [WinFocus]::Focus($dp.MainWindowHandle)
+                $focused = $true
+                $reason = "direct-focus:$($dp.ProcessName):$($dp.Id)"
+            } catch { $reason = "direct-focus-error:$($_.Exception.InnerException.Message -replace '[^\\x20-\\x7E]','?')" }
+            break
+        }
+        $dcim = Get-CimInstance Win32_Process -Filter "ProcessId=$directPid" -ErrorAction SilentlyContinue
+        if (-not $dcim -or $dcim.ParentProcessId -le 0 -or $dcim.ParentProcessId -eq $directPid) { break }
+        $directPid = $dcim.ParentProcessId
+    }
+}
+# Last resort: find any WindowsTerminal process, grab its MainWindowHandle, and focus it
+if (-not $focused) {
+    $anyWt = Get-Process -Name 'WindowsTerminal','WindowsTerminalPreview' -ErrorAction SilentlyContinue |
+        Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+    if ($anyWt) {
+        try {
+            [WinFocus]::Focus($anyWt.MainWindowHandle)
+            $focused = $true
+            $reason = "direct-focus-any-wt:$($anyWt.Id)"
+        } catch { $reason = "direct-focus-error" }
+    }
+}
+# Absolute last resort: AppActivate (built-in .NET, no P/Invoke needed)
+if (-not $focused) {
+    $aaAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() |
+        Where-Object { $_.GetName().Name -eq 'Microsoft.VisualBasic' }
+    if (-not $aaAsm) {
+        try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop } catch {}
+    }
+    $aaPid = ${sourcePid}
+    for ($k = 0; $k -lt 12; $k++) {
+        $ap = Get-Process -Id $aaPid -ErrorAction SilentlyContinue
+        if (-not $ap) { break }
+        if ($ap.MainWindowHandle -ne 0) {
+            try {
+                [Microsoft.VisualBasic.Interaction]::AppActivate($ap.Id)
+                $focused = $true
+                $reason = "appactivate:$($ap.ProcessName):$($ap.Id)"
+            } catch { $reason = "appactivate-error" }
+            break
+        }
+        $acim = Get-CimInstance Win32_Process -Filter "ProcessId=$aaPid" -ErrorAction SilentlyContinue
+        if (-not $acim -or $acim.ParentProcessId -le 0 -or $acim.ParentProcessId -eq $aaPid) { break }
+        $aaPid = $acim.ParentProcessId
+    }
+    if (-not $focused) {
+        $lastWt = Get-Process -Name 'WindowsTerminal','WindowsTerminalPreview' -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+        if ($lastWt) {
+            try {
+                [Microsoft.VisualBasic.Interaction]::AppActivate($lastWt.Id)
+                $focused = $true
+                $reason = "appactivate-any-wt:$($lastWt.Id)"
+            } catch { $reason = "appactivate-any-wt-error" }
+        }
+    }
+}
 Write-ClawdFocusResult $reason
 `;
 }
@@ -588,6 +671,18 @@ function logFocusResult(reason) {
 
 function handleFocusHelperLine(line) {
   const text = String(line || "").trim();
+  if (text.startsWith(FOCUS_CHECK_PREFIX)) {
+    const payload = text.slice(FOCUS_CHECK_PREFIX.length);
+    const idx = payload.indexOf(":");
+    const marker = idx >= 0 ? payload.slice(0, idx) : payload;
+    const result = idx >= 0 ? payload.slice(idx + 1) : "";
+    const cb = focusCheckCallbacks.get(marker);
+    if (cb) {
+      focusCheckCallbacks.delete(marker);
+      try { cb(result === "focused"); } catch {}
+    }
+    return;
+  }
   if (!text.startsWith(FOCUS_RESULT_PREFIX)) return;
   const reason = safeLogValue(text.slice(FOCUS_RESULT_PREFIX.length));
   logFocusResult(`branch=windows-helper reason=${reason}`);
@@ -873,8 +968,13 @@ function requestWindowsFocus(request) {
   // Grant PowerShell helper permission to call SetForegroundWindow.
   // This must happen HERE — Electron just received user input (click/hotkey),
   // so it has foreground privilege to delegate.
-  if (ctx._allowSetForeground && psProc && psProc.pid) {
-    try { ctx._allowSetForeground(psProc.pid); } catch {}
+  // ASFW_ANY (-1 = 0xFFFFFFFF) grants permission to ALL processes.
+  const ASFW_ANY = -1;
+  if (ctx._allowSetForeground) {
+    try { ctx._allowSetForeground(ASFW_ANY); } catch {}
+    if (psProc && psProc.pid) {
+      try { ctx._allowSetForeground(psProc.pid); } catch {}
+    }
   }
 
   // Legacy focus for reliable window activation (ALT key trick + SetForegroundWindow)
@@ -1003,6 +1103,7 @@ function requestMacFocus(request) {
 function focusTerminalWindow(sourcePidOrRequest, cwd, editor, pidChain, meta) {
   const request = normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta);
   logFocusRequest(request);
+  if (request.sourcePid) console.warn(`[Clawd] focusTerminalWindow: sourcePid=${request.sourcePid} wtHwnd=${request.wtHwnd || "none"} sessionId=${request.sessionId || "none"}`);
   if (!request.sourcePid) {
     logFocusResult("branch=none reason=no-source-pid");
     return;
@@ -1138,10 +1239,56 @@ function cleanup() {
   windowsFocusLastRequestKey = null;
 }
 
+// Check whether the terminal/agent window is currently focused (foreground).
+// Sends a quick check to the persistent PowerShell helper via stdin and calls
+// `callback(isFocused)` when the result arrives. Falls back to `false` after
+// the timeout (the check is best-effort; we show the bubble on uncertainty).
+//
+// Uasge: checkAgentTerminalFocused(sourcePid, (isFocused) => { ... })
+function checkAgentTerminalFocused(sourcePid, callback, timeoutMs = 2000) {
+  if (!isWin || !psProc || !psProc.stdin || psProc.stdin.destroyed) {
+    if (typeof callback === "function") callback(false);
+    return;
+  }
+  const marker = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const timer = setTimeout(() => {
+    if (focusCheckCallbacks.has(marker)) {
+      focusCheckCallbacks.delete(marker);
+      try { callback(false); } catch {}
+    }
+  }, Math.max(100, Math.min(timeoutMs, 5000)));
+  focusCheckCallbacks.set(marker, (isFocused) => {
+    clearTimeout(timer);
+    try { callback(isFocused); } catch {}
+  });
+  const checkScript = `
+$cur = ${sourcePid}
+$focused = $false
+$fgHwnd = [WinFocus]::GetForegroundWindow()
+if ($fgHwnd -ne [IntPtr]::Zero) {
+    $fgPid = 0
+    [WinFocus]::GetWindowThreadProcessId($fgHwnd, [ref]$fgPid)
+    for ($i = 0; $i -lt 12; $i++) {
+        if ($cur -eq $fgPid) { $focused = $true; break }
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$cur" -ErrorAction SilentlyContinue
+        if (-not $cim -or $cim.ParentProcessId -le 0 -or $cim.ParentProcessId -eq $cur) { break }
+        $cur = $cim.ParentProcessId
+    }
+}
+Write-Output '${FOCUS_CHECK_PREFIX}${marker}:' + ($focused ? 'focused' : 'unfocused')
+`;
+  try { psProc.stdin.write(checkScript + "\n"); } catch {
+    clearTimeout(timer);
+    focusCheckCallbacks.delete(marker);
+    try { callback(false); } catch {}
+  }
+}
+
 return {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  checkAgentTerminalFocused,
   clearMacFocusCooldownTimer,
   cleanup,
   __test: {

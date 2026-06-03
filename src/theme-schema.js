@@ -294,6 +294,7 @@ function hasReactionBindings(reactions) {
     && (
       (typeof entry.file === "string" && entry.file.length > 0)
       || (Array.isArray(entry.files) && entry.files.some((file) => typeof file === "string" && file.length > 0))
+      || ["left", "center", "right"].some((key) => typeof entry[key] === "string" && entry[key].length > 0)
     )
   );
 }
@@ -374,6 +375,9 @@ function collectRequiredAssetFiles(theme) {
       if (typeof entry.file === "string") addThemeAssetFile(files, entry.file);
       if (Array.isArray(entry.files)) {
         for (const file of entry.files) addThemeAssetFile(files, file);
+      }
+      for (const key of ["left", "center", "right"]) {
+        if (typeof entry[key] === "string") addThemeAssetFile(files, entry[key]);
       }
     }
   }
@@ -662,6 +666,11 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     for (const r of Object.values(theme.reactions)) {
       if (r && r.file) r.file = bn(r.file);
       if (r && Array.isArray(r.files)) r.files = r.files.map(bn);
+      if (r) {
+        for (const key of ["left", "center", "right"]) {
+          if (typeof r[key] === "string") r[key] = bn(r[key]);
+        }
+      }
     }
   }
   if (theme.sounds) {

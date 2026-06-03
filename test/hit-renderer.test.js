@@ -18,13 +18,17 @@ class FakeArea {
       remove: (c) => this.classList._set.delete(c),
     };
     this.offsetWidth = 200;
+    this.offsetHeight = 100;
     this.listeners = new Map();
   }
   addEventListener(event, cb) { this.listeners.set(event, cb); }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: this.offsetWidth, height: this.offsetHeight };
+  }
   setPointerCapture() {}
 }
 
-function createHarness({ isMac = false, sendState = {} } = {}) {
+function createHarness({ isMac = false, sendState = {}, omitLaunchClickAction = false } = {}) {
   const apiCalls = [];
   const apiHandlers = {};
   const area = new FakeArea();
@@ -43,6 +47,31 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
 
   const timers = [];
   let timerId = 0;
+  const hitAPI = {
+    onThemeConfig: (cb) => { apiHandlers.themeConfig = cb; },
+    dragLock: (v) => apiCalls.push(["dragLock", v]),
+    dragMove: () => apiCalls.push(["dragMove"]),
+    dragEnd: () => apiCalls.push(["dragEnd"]),
+    showContextMenu: () => apiCalls.push(["showContextMenu"]),
+    focusTerminal: () => apiCalls.push(["focusTerminal"]),
+    exitMiniMode: () => apiCalls.push(["exitMiniMode"]),
+    showDashboard: () => apiCalls.push(["showDashboard"]),
+    revealSessionHud: () => apiCalls.push(["revealSessionHud"]),
+    petHover: (value) => apiCalls.push(["petHover", value]),
+    startDragReaction: () => apiCalls.push(["startDragReaction"]),
+    endDragReaction: () => apiCalls.push(["endDragReaction"]),
+    startFileDragCatch: (payload) => apiCalls.push(["startFileDragCatch", payload]),
+    updateFileDragCatch: (payload) => apiCalls.push(["updateFileDragCatch", payload]),
+    endFileDragCatch: (reason) => apiCalls.push(["endFileDragCatch", reason]),
+    dropFiles: (payload) => apiCalls.push(["dropFiles", payload]),
+    playClickReaction: (svg, d) => apiCalls.push(["playClickReaction", svg, d]),
+    onStateSync: (cb) => { apiHandlers.stateSync = cb; },
+    onCancelReaction: (cb) => { apiHandlers.cancelReaction = cb; },
+  };
+  if (!omitLaunchClickAction) {
+    hitAPI.launchClickAction = () => apiCalls.push(["launchClickAction"]);
+  }
+
   const context = {
     document: fakeDocument,
     window: {
@@ -52,24 +81,9 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
         annoyed: { file: "annoyed.svg", duration: 3500 },
         clickLeft: { file: "left.svg", duration: 2500 },
         clickRight: { file: "right.svg", duration: 2500 },
+        fileDropCatch: { file: "catch.svg" },
       } },
-      hitAPI: {
-        onThemeConfig: (cb) => { apiHandlers.themeConfig = cb; },
-        dragLock: (v) => apiCalls.push(["dragLock", v]),
-        dragMove: () => apiCalls.push(["dragMove"]),
-        dragEnd: () => apiCalls.push(["dragEnd"]),
-        showContextMenu: () => apiCalls.push(["showContextMenu"]),
-        focusTerminal: () => apiCalls.push(["focusTerminal"]),
-        exitMiniMode: () => apiCalls.push(["exitMiniMode"]),
-        showDashboard: () => apiCalls.push(["showDashboard"]),
-        revealSessionHud: () => apiCalls.push(["revealSessionHud"]),
-        petHover: (value) => apiCalls.push(["petHover", value]),
-        startDragReaction: () => apiCalls.push(["startDragReaction"]),
-        endDragReaction: () => apiCalls.push(["endDragReaction"]),
-        playClickReaction: (svg, d) => apiCalls.push(["playClickReaction", svg, d]),
-        onStateSync: (cb) => { apiHandlers.stateSync = cb; },
-        onCancelReaction: (cb) => { apiHandlers.cancelReaction = cb; },
-      },
+      hitAPI,
       addEventListener: () => {},
     },
     setTimeout: (cb, ms) => {
@@ -98,6 +112,28 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
     fakeDocument._dispatch("pointerup", { button, ctrlKey, metaKey, clientX });
   }
 
+  function fileDragEvent({ clientX = 100, clientY = 50, includeFiles = true } = {}) {
+    const event = {
+      clientX,
+      clientY,
+      dataTransfer: includeFiles
+        ? {
+          types: ["Files"],
+          items: [{ kind: "file" }],
+          files: [
+            { name: "demo.txt", path: "F:\\agentic\\repo\\demo.txt" },
+            { name: "repo", path: "F:\\agentic\\repo" },
+          ],
+        }
+        : { types: ["text/plain"], items: [{ kind: "string" }], files: [] },
+      prevented: false,
+      stopped: false,
+      preventDefault() { this.prevented = true; },
+      stopPropagation() { this.stopped = true; },
+    };
+    return event;
+  }
+
   function fireTimer(predicate) {
     const t = timers.find((x) => !x.cleared && predicate(x));
     if (!t) return false;
@@ -106,7 +142,7 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
     return true;
   }
 
-  return { apiCalls, apiHandlers, pointerup, fireTimer, timers, area, context };
+  return { apiCalls, apiHandlers, pointerup, fileDragEvent, fireTimer, timers, area, context };
 }
 
 describe("hit-renderer input layer", () => {
@@ -116,6 +152,37 @@ describe("hit-renderer input layer", () => {
     const names = h.apiCalls.map((c) => c[0]);
     assert.ok(names.includes("revealSessionHud"), "should call revealSessionHud");
     assert.ok(!names.includes("focusTerminal"), "must not call focusTerminal");
+  });
+
+  it("configured pet action does not launch on single click", () => {
+    const h = createHarness({ sendState: { currentState: "idle", miniMode: false, dndEnabled: false, petClickActionEnabled: true } });
+    h.pointerup({});
+    h.fireTimer((t) => t.ms === 400);
+    const names = h.apiCalls.map((c) => c[0]);
+    assert.ok(names.includes("revealSessionHud"), "single click should still reveal Session HUD");
+    assert.ok(!names.includes("launchClickAction"), "single click must not launch configured app");
+  });
+
+  it("configured pet action launches on double click", () => {
+    const h = createHarness({ sendState: { currentState: "idle", miniMode: false, dndEnabled: false, petClickActionEnabled: true } });
+    h.pointerup({});
+    h.pointerup({});
+    h.fireTimer((t) => t.ms === 400);
+    const names = h.apiCalls.map((c) => c[0]);
+    assert.ok(names.includes("launchClickAction"), "double click should launch configured app");
+    assert.ok(names.includes("playClickReaction"), "double click should keep the pet reaction");
+  });
+
+  it("double click reaction still plays if click-action bridge is unavailable", () => {
+    const h = createHarness({
+      omitLaunchClickAction: true,
+      sendState: { currentState: "idle", miniMode: false, dndEnabled: false, petClickActionEnabled: true },
+    });
+    h.pointerup({});
+    h.pointerup({});
+    assert.doesNotThrow(() => h.fireTimer((t) => t.ms === 400));
+    const names = h.apiCalls.map((c) => c[0]);
+    assert.ok(names.includes("playClickReaction"), "missing bridge must not break existing double-click reaction");
   });
 
   it("reports hover enter/leave and suppresses hover while dragging", () => {
@@ -134,6 +201,48 @@ describe("hit-renderer input layer", () => {
         ["petHover", true],
         ["petHover", false],
       ]
+    );
+  });
+
+  it("starts, updates, and ends file drag catch for external files", () => {
+    const h = createHarness();
+    const enter = h.fileDragEvent({ clientX: 160, clientY: 25 });
+    const over = h.fileDragEvent({ clientX: 20, clientY: 80 });
+    const drop = h.fileDragEvent({ clientX: 100, clientY: 50 });
+
+    h.area.listeners.get("dragenter")(enter);
+    h.area.listeners.get("dragover")(over);
+    h.area.listeners.get("drop")(drop);
+
+    assert.strictEqual(enter.prevented, true);
+    assert.strictEqual(over.prevented, true);
+    assert.strictEqual(drop.prevented, true);
+    const fileDragCalls = JSON.parse(JSON.stringify(
+      h.apiCalls.filter((c) => c[0].includes("FileDragCatch"))
+    ));
+    assert.deepStrictEqual(
+      fileDragCalls,
+      [
+        ["startFileDragCatch", { x: 0.6, y: -0.5, direction: "right" }],
+        ["updateFileDragCatch", { x: -0.8, y: 0.6, direction: "left" }],
+        ["endFileDragCatch", "drop"],
+      ]
+    );
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(h.apiCalls.filter((c) => c[0] === "dropFiles"))),
+      [["dropFiles", { paths: ["F:\\agentic\\repo\\demo.txt", "F:\\agentic\\repo"] }]]
+    );
+  });
+
+  it("ignores non-file drags and suppresses file catch in mini mode", () => {
+    const h = createHarness();
+    h.area.listeners.get("dragenter")(h.fileDragEvent({ includeFiles: false }));
+    h.apiHandlers.stateSync({ miniMode: true });
+    h.area.listeners.get("dragenter")(h.fileDragEvent({ includeFiles: true }));
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0].includes("FileDragCatch")),
+      []
     );
   });
 

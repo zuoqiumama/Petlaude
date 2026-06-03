@@ -42,6 +42,7 @@ function collectThemeEnvelopeFiles(theme) {
     if (typeof entry === "object") {
       addFile(entry.file);
       if (Array.isArray(entry.files)) entry.files.forEach(addFile);
+      for (const key of ["left", "center", "right"]) addFile(entry[key]);
     }
   };
 

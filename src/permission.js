@@ -6,6 +6,7 @@ const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const path = require("path");
 const http = require("http");
+const { getAgent } = require("../agents/registry");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -186,8 +187,21 @@ function buildAntigravityPermissionResponseBody(decisionOrBehavior, message) {
   return decision ? JSON.stringify(decision) : "{}";
 }
 
+function getPermissionAgentDisplayName(agentId) {
+  const id = typeof agentId === "string" && agentId.trim()
+    ? agentId.trim()
+    : "claude-code";
+  if (id === "codex") return "Codex";
+  const agent = getAgent(id);
+  return agent && typeof agent.name === "string" && agent.name ? agent.name : id;
+}
+
+function buildPermissionBubbleTitle(permEntry) {
+  return `${getPermissionAgentDisplayName(permEntry && permEntry.agentId)} Permission Request`;
+}
+
 function isPassiveNotifyEntry(permEntry) {
-  return !!(permEntry && (permEntry.isCodexNotify || permEntry.isKimiNotify));
+  return !!(permEntry && (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isTaskComplete));
 }
 
 function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now()) {
@@ -347,6 +361,7 @@ function buildPermissionFocusEntry(perm) {
   if (perm.cwd) focusEntry.cwd = perm.cwd;
   if (perm.agentPid) focusEntry.agentPid = perm.agentPid;
   if (perm.pidChain) focusEntry.pidChain = perm.pidChain;
+  if (perm.wtHwnd) focusEntry.wtHwnd = perm.wtHwnd;
   if (perm.host) focusEntry.host = perm.host;
   if (perm.platform) focusEntry.platform = perm.platform;
   if (perm.model) focusEntry.model = perm.model;
@@ -359,6 +374,18 @@ module.exports = function initPermission(ctx) {
 
 // Each entry: { res, abortHandler, suggestions, sessionId, bubble, hideTimer, toolName, toolInput, resolvedSuggestion, createdAt, measuredHeight }
 const pendingPermissions = [];
+// Prevent concurrent task-complete checkAgentTerminalFocused calls for the
+// same session. checkAgentTerminalFocused is async (PowerShell stdin + stdout
+// line match), so multiple Stop events can arrive before any callback fires.
+// This Set blocks the second+ Stop at entry, before the async call starts.
+const taskCompleteInFlight = new Set();
+// Prevent duplicate task-complete bubbles.
+// - shownSessions: per-session dedup (one bubble per session)
+// - globalCooldownUntil: suppress ALL task-complete bubbles until this
+//   timestamp. Reset on each show so rapid session restarts don't spam.
+const taskCompleteShownSessions = new Set();
+let taskCompleteGlobalCooldownUntil = 0;
+const TASK_COMPLETE_GLOBAL_COOLDOWN_MS = 10000;
 // Pure-metadata tools auto-allowed without showing a bubble (zero side effects)
 const PASSTHROUGH_TOOLS = new Set([
   "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
@@ -551,6 +578,7 @@ function showPermissionBubble(permEntry) {
   const pos = { x: 0, y: 0, width: 340, height: bh };
 
   const bub = new BrowserWindow({
+    title: buildPermissionBubbleTitle(permEntry),
     width: pos.width,
     height: pos.height,
     x: pos.x,
@@ -565,10 +593,13 @@ function showPermissionBubble(permEntry) {
     ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
     ...(isMac ? { type: "panel" } : {}),
     // Elicitation needs keyboard focus for the Other/textarea input path.
+    // Task-complete bubbles need focus so clicking "Go to" grants
+    // foreground activation rights on Windows — without them,
+    // AllowSetForegroundWindow / SetForegroundWindow fail silently.
     // Permission prompts stay non-focusable so they don't steal focus from
     // CC's terminal (which would trigger false "User answered in terminal"
     // denials — see bub.focus() note below).
-    focusable: !!permEntry.isElicitation,
+    focusable: !!permEntry.isElicitation || !!permEntry.isTaskComplete,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -685,11 +716,17 @@ function refreshPermissionAutoCloseForPolicy() {
 
 function buildPermissionBubblePayload(permEntry) {
   const sess = ctx.sessions.get(permEntry.sessionId);
-  const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
+  const sessionFolder = (permEntry.toolInput && permEntry.toolInput.sessionFolder)
+    || (sess && sess.cwd ? path.basename(sess.cwd) : null);
   const sessionShortId = permEntry.sessionId
     ? String(permEntry.sessionId).slice(-3)
     : null;
+  const taskSummary = (permEntry.toolInput && permEntry.toolInput.taskSummary) || null;
   return {
+    agentId: permEntry.agentId || "claude-code",
+    agentName: (permEntry.toolInput && permEntry.toolInput.agentName)
+      || getPermissionAgentDisplayName(permEntry.agentId),
+    permissionTitle: buildPermissionBubbleTitle(permEntry),
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
     suggestions: permEntry.suggestions || [],
@@ -697,10 +734,12 @@ function buildPermissionBubblePayload(permEntry) {
     isElicitation: permEntry.isElicitation || false,
     isOpencode: permEntry.isOpencode || false,
     isAntigravity: permEntry.isAntigravity || false,
+    isTaskComplete: permEntry.isTaskComplete || false,
     opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
     opencodePatterns: permEntry.opencodePatterns || [],
     sessionFolder,
     sessionShortId,
+    taskSummary,
   };
 }
 
@@ -883,8 +922,8 @@ function maybeStartRemoteApproval(permEntry) {
 }
 
   function resolvePermissionEntry(permEntry, behavior, message) {
-    // Codex notify bubbles have no HTTP connection — route to dedicated cleanup
-    if (permEntry.isCodexNotify || permEntry.isKimiNotify) {
+    // Passive notify bubbles (Codex/Kimi/TaskComplete) have no HTTP connection — route to dedicated cleanup
+    if (permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isTaskComplete) {
       dismissPassiveNotify(permEntry, `resolve:${behavior || "unknown"}`);
       return;
     }
@@ -1201,6 +1240,23 @@ function handleDecide(event, behavior) {
     dismissPassiveNotify(perm, "ipc-decide");
     return;
   }
+  if (perm.isTaskComplete) {
+    if (behavior === "task-complete-go") {
+      // Grant foreground permission to ALL processes (ASFW_ANY).
+      // The bubble window is focusable, so the user's click grants
+      // Electron foreground rights. Delegating to ASFW_ANY lets the
+      // persistent PowerShell helper call SetForegroundWindow successfully.
+      if (typeof ctx.allowSetForegroundWindow === "function") {
+        ctx.allowSetForegroundWindow(-1); // ASFW_ANY = 0xFFFFFFFF
+      }
+      const focusEntry = buildPermissionFocusEntry(perm);
+      permLog(`task-complete-go focus: sessionId=${perm.sessionId} sourcePid=${perm.sourcePid || "none"} wtHwnd=${perm.wtHwnd || "none"} agentId=${perm.agentId || "none"} focusEntry=${focusEntry ? "ok" : "null"}`);
+      console.warn(`[Clawd] task-complete-go: sourcePid=${perm.sourcePid || "none"} wtHwnd=${perm.wtHwnd || "none"} sessionId=${perm.sessionId || "none"}`);
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: focusEntry });
+    }
+    dismissPassiveNotify(perm, behavior === "task-complete-go" ? "go-to-agent" : "ipc-decide");
+    return;
+  }
   if (perm.isCodex) {
     if (behavior === "allow" || behavior === "deny") {
       resolvePermissionEntry(perm, behavior);
@@ -1331,9 +1387,142 @@ function showKimiNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
+function shouldSuppressTaskCompleteBubble(ctx) {
+  const policy = getPolicy(ctx, "notification");
+  return !!(ctx.doNotDisturb || !policy.enabled);
+}
+
+function showTaskCompleteBubble({ sessionId, agentId, agentName, sessionFolder, taskSummary, _sessData }) {
+  console.warn(`[Clawd] showTaskCompleteBubble ENTER: session=${sessionId} agent=${agentId} sourcePid=${(_sessData && _sessData.sourcePid) || "none"}`);
+  if (shouldSuppressTaskCompleteBubble(ctx)) {
+    const policy = getPolicy(ctx, "notification");
+    console.warn(`[Clawd] showTaskCompleteBubble SUPPRESSED: dnd=${ctx.doNotDisturb} enabled=${policy.enabled}`);
+    permLog(`task-complete suppressed: session=${sessionId} agent=${agentId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
+    return;
+  }
+
+  // ── Synchronous dedup gate ──────────────────────────────────────────
+  // checkAgentTerminalFocused is async. Multiple Stop events can arrive
+  // before the first callback fires. The in-flight Set blocks duplicates
+  // at entry — before any async work starts.
+  // Suppress if a bubble was already shown for this session.
+  if (taskCompleteShownSessions.has(sessionId)) {
+    console.warn(`[Clawd] showTaskCompleteBubble DEDUP (already-shown): session=${sessionId}`);
+    permLog(`task-complete dedup (already-shown): session=${sessionId} agent=${agentId}`);
+    return;
+  }
+
+  // ── In-flight dedup ─────────────────────────────────────────────
+  // checkAgentTerminalFocused is async. Multiple Stop events for the
+  // same session can arrive before the first callback fires. The in-flight
+  // Set blocks duplicates at entry — before any async work starts.
+  if (taskCompleteInFlight.has(sessionId)) {
+    console.warn(`[Clawd] showTaskCompleteBubble DEDUP (in-flight): session=${sessionId}`);
+    permLog(`task-complete dedup (in-flight): session=${sessionId} agent=${agentId}`);
+    return;
+  }
+
+  // ── Global cooldown ──────────────────────────────────────────────
+  // Prevent rapid re-triggers when the user switches to the terminal
+  // after clicking "转到" and causes new Stop events.
+  if (Date.now() < taskCompleteGlobalCooldownUntil) {
+    console.warn(`[Clawd] showTaskCompleteBubble COOLDOWN: session=${sessionId}`);
+    permLog(`task-complete suppressed (global cooldown): session=${sessionId} agent=${agentId}`);
+    return;
+  }
+
+  taskCompleteInFlight.add(sessionId);
+
+  const cleanupInFlight = (reason) => {
+    taskCompleteInFlight.delete(sessionId);
+    if (reason) permLog(`task-complete in-flight done: session=${sessionId} reason=${reason}`);
+  };
+
+  const policy = getPolicy(ctx, "notification");
+  // Copy focus-relevant fields from the real session so the "Go to" button
+  // has the data it needs even if the session is evicted before the user clicks.
+  // _sessData is a pre-deletion snapshot passed by the server route for
+  // SessionEnd events (updateSession deletes the session before we run).
+  const sessData = _sessData || null;
+  const sess = ctx.sessions && ctx.sessions.get(sessionId);
+  const focusFields = {};
+  const sourcePid = (sessData && sessData.sourcePid) || (sess && sess.sourcePid) || null;
+  const effSource = sessData || sess;
+  if (effSource) {
+    if (effSource.sourcePid) focusFields.sourcePid = effSource.sourcePid;
+    if (effSource.agentPid) focusFields.agentPid = effSource.agentPid;
+    if (effSource.pidChain) focusFields.pidChain = effSource.pidChain;
+    if (effSource.cwd) focusFields.cwd = effSource.cwd;
+    if (effSource.wtHwnd) focusFields.wtHwnd = effSource.wtHwnd;
+    if (effSource.editor) focusFields.editor = effSource.editor;
+    if (effSource.host) focusFields.host = effSource.host;
+    if (effSource.platform) focusFields.platform = effSource.platform;
+    if (effSource.model) focusFields.model = effSource.model;
+    if (effSource.codexOriginator) focusFields.codexOriginator = effSource.codexOriginator;
+    if (effSource.codexSource) focusFields.codexSource = effSource.codexSource;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null, suggestions: [],
+    sessionId, bubble: null, hideTimer: null,
+    toolName: "TaskComplete",
+    toolInput: {
+      agentName: agentName || agentId || "Agent",
+      sessionFolder: sessionFolder || "",
+      taskSummary: taskSummary || "",
+    },
+    resolvedSuggestion: null, createdAt: Date.now(),
+    isElicitation: false, isTaskComplete: true,
+    agentId: agentId || "claude-code",
+    autoExpireTimer: null,
+    ...focusFields,
+  };
+
+  // Actually create and display the bubble.
+  const doShow = () => {
+    cleanupInFlight("shown");
+    const existing = pendingPermissions.find(
+      (p) => p && p.isTaskComplete && p.sessionId === sessionId
+    );
+    if (existing) {
+      permLog(`task-complete dedup (doShow): session=${sessionId} agent=${agentId} (existing bubble still pending)`);
+      return;
+    }
+    addPendingPermission(permEntry, "passive-added");
+    taskCompleteShownSessions.add(sessionId);
+    taskCompleteGlobalCooldownUntil = Date.now() + TASK_COMPLETE_GLOBAL_COOLDOWN_MS;
+    // Prune shown-sessions set if it grows too large
+    if (taskCompleteShownSessions.size > 200) {
+      const entries = [...taskCompleteShownSessions];
+      const toRemove = entries.slice(0, 100);
+      for (const id of toRemove) taskCompleteShownSessions.delete(id);
+    }
+    showPermissionBubble(permEntry);
+    permLog(`task-complete show: agent=${agentId} session=${sessionId} autoCloseMs=${policy.autoCloseMs} sourcePid=${permEntry.sourcePid || "none"}`);
+    schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
+  };
+
+  // Show bubble immediately — synced with pet's "attention" animation.
+  if (sourcePid && typeof ctx.checkAgentTerminalFocused === "function") {
+    ctx.checkAgentTerminalFocused(sourcePid, (isFocused) => {
+      if (isFocused) {
+        console.warn(`[Clawd] showTaskCompleteBubble SKIPPED (terminal focused): session=${sessionId}`);
+        permLog(`task-complete skipped (terminal focused): agent=${agentId} session=${sessionId}`);
+        cleanupInFlight("focused");
+        return;
+      }
+      doShow();
+    });
+  } else {
+    console.warn(`[Clawd] showTaskCompleteBubble SHOW (no focus check): session=${sessionId}`);
+    doShow();
+  }
+}
+
 function getPassiveNotifyAgentId(permEntry) {
   if (permEntry?.isCodexNotify) return "codex";
   if (permEntry?.isKimiNotify) return "kimi-cli";
+  if (permEntry?.isTaskComplete) return permEntry?.agentId || "unknown";
   return permEntry?.agentId || "unknown";
 }
 
@@ -1437,7 +1626,7 @@ function dismissPermissionsByAgent(agentId) {
   const toDismiss = pendingPermissions.filter((p) => p && p.agentId === agentId);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify || perm.isKimiNotify) {
+    if (perm.isCodexNotify || perm.isKimiNotify || perm.isTaskComplete) {
       dismissPassiveNotify(perm, `dismiss-by-agent:${agentId}`);
       continue;
     }
@@ -1451,7 +1640,7 @@ function dismissPermissionsByAgent(agentId) {
 }
 
 function dismissInteractivePermissionBubbles() {
-  const toDismiss = pendingPermissions.filter((p) => p && !p.isCodexNotify && !p.isKimiNotify);
+  const toDismiss = pendingPermissions.filter((p) => p && !p.isCodexNotify && !p.isKimiNotify && !p.isTaskComplete);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
     dismissInteractivePermissionWithoutDecision(perm, "interactive-bubbles-dismissed");
@@ -1466,7 +1655,7 @@ function dismissPermissionsForDnd() {
   const toDismiss = pendingPermissions.filter(Boolean);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify || perm.isKimiNotify) {
+    if (perm.isCodexNotify || perm.isKimiNotify || perm.isTaskComplete) {
       dismissPassiveNotify(perm, "dnd-enabled");
       continue;
     }
@@ -1530,6 +1719,7 @@ return {
   handleBubbleHeight, handleDecide, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
+  showTaskCompleteBubble,
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
@@ -1554,5 +1744,7 @@ module.exports.__test = {
   buildQwenCodePermissionResponseBody,
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
+  getPermissionAgentDisplayName,
+  buildPermissionBubbleTitle,
   buildElicitationUpdatedInput,
 };

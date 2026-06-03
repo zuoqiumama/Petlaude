@@ -37,6 +37,7 @@ function initWithConfig(cfg) {
   _miniViewBox = tc.miniModeViewBox || null;
   _fileViewBoxes = tc.fileViewBoxes || {};
   _dragSvg = tc.dragSvg || null;
+  _fileDropCatch = tc.fileDropCatch || null;
   _idleFollowSvg = tc.idleFollowSvg || "clawd-idle-follow.svg";
   _glyphFlipDefs = tc.glyphFlips || { "pixel-z": 4, "pixel-z-small": 3 };
 
@@ -105,7 +106,7 @@ function getCurrentSvgRoot() {
 }
 
 function shouldPauseForLowPower() {
-  if (isReacting || isDragReacting) return false;
+  if (isReacting || isDragReacting || isFileDragCatching) return false;
   return lowPowerIdleMode && LOW_POWER_PAUSE_STATES.has(currentState);
 }
 
@@ -334,6 +335,7 @@ let _imgCacheBustSeq = 0;
 let _miniViewBox = null;
 let _fileViewBoxes = {};
 let _dragSvg;
+let _fileDropCatch = null;
 let _idleFollowSvg;
 let _glyphFlipDefs;
 let _objectScaleCSS;
@@ -406,10 +408,12 @@ function releaseImg(el) {
 // --- Reaction state (visual side) ---
 let isReacting = false;
 let isDragReacting = false;
+let isFileDragCatching = false;
 let reactTimer = null;
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 let currentState = null;      // last state name received from main (for re-pulse)
 let lastCloudlingPointerPayload = null;
+let lastFileDragCatchPayload = null;
 let dndEnabled = false;
 let miniLeftFlip = false;
 
@@ -598,10 +602,55 @@ function getAssetUrl(file) {
   return `${_sourceAssetsPath}/${file}`;
 }
 
+function sanitizeFileDragDirection(value) {
+  return value === "left" || value === "right" || value === "center" ? value : "center";
+}
+
+function normalizeFileDragCatchPayload(payload) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const x = Number(source.x);
+  const y = Number(source.y);
+  return {
+    x: Number.isFinite(x) ? Math.max(-1, Math.min(1, x)) : 0,
+    y: Number.isFinite(y) ? Math.max(-1, Math.min(1, y)) : 0,
+    direction: sanitizeFileDragDirection(source.direction),
+  };
+}
+
+function getFileDropCatchFile(payload) {
+  const spec = _fileDropCatch;
+  if (!spec) return null;
+  if (typeof spec === "string") return spec;
+  if (typeof spec !== "object") return null;
+  const direction = sanitizeFileDragDirection(payload && payload.direction);
+  return spec[direction] || spec.file || spec.center || spec.left || spec.right || null;
+}
+
+function callFileDragCatchBridge(objectEl, payload) {
+  if (!objectEl || objectEl.tagName !== "OBJECT" || !payload) return false;
+  try {
+    const svgWindow = objectEl.contentWindow;
+    if (svgWindow && typeof svgWindow.__clawdSetFileDragCatch === "function") {
+      svgWindow.__clawdSetFileDragCatch(payload);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+function applyFileDragCatchBridge(payload) {
+  const normalized = normalizeFileDragCatchPayload(payload);
+  lastFileDragCatchPayload = normalized;
+  callFileDragCatchBridge(clawdEl, normalized);
+}
+
 // --- IPC-triggered reactions (from hit window via main relay) ---
 window.electronAPI.onStartDragReaction(() => startDragReaction());
 window.electronAPI.onEndDragReaction(() => endDragReaction());
 window.electronAPI.onPlayClickReaction((svg, duration) => playReaction(svg, duration));
+window.electronAPI.onStartFileDragCatch((payload) => startFileDragCatch(payload));
+window.electronAPI.onUpdateFileDragCatch((payload) => updateFileDragCatch(payload));
+window.electronAPI.onEndFileDragCatch((reason) => endFileDragCatch(reason));
 
 function playReaction(svgFile, durationMs) {
   isReacting = true;
@@ -631,6 +680,10 @@ function cancelReaction() {
   if (isDragReacting) {
     isDragReacting = false;
   }
+  if (isFileDragCatching) {
+    isFileDragCatching = false;
+    lastFileDragCatchPayload = null;
+  }
 }
 
 // --- Drag reaction (loops while dragging) ---
@@ -654,6 +707,52 @@ function startDragReaction() {
 function endDragReaction() {
   if (!isDragReacting) return;
   isDragReacting = false;
+  window.electronAPI.resumeFromReaction();
+}
+
+function swapToFileDragCatch(file) {
+  swapToFile(file, null, isSvgFile(file) ? true : undefined);
+}
+
+function startFileDragCatch(payload) {
+  if (dndEnabled) return;
+  const normalized = normalizeFileDragCatchPayload(payload);
+  const file = getFileDropCatchFile(normalized);
+  if (!file) return;
+
+  if (isReacting) {
+    if (reactTimer) { clearTimeout(reactTimer); reactTimer = null; }
+    isReacting = false;
+  }
+  if (isDragReacting) {
+    isDragReacting = false;
+  }
+
+  isFileDragCatching = true;
+  detachEyeTracking();
+  resumeCurrentSvgForLowPower();
+  window.electronAPI.pauseCursorPolling();
+  swapToFileDragCatch(file);
+  applyFileDragCatchBridge(normalized);
+}
+
+function updateFileDragCatch(payload) {
+  const normalized = normalizeFileDragCatchPayload(payload);
+  if (!isFileDragCatching) {
+    startFileDragCatch(normalized);
+    return;
+  }
+  const file = getFileDropCatchFile(normalized);
+  if (file && file !== currentDisplayedSvg && file !== pendingSvgFile) {
+    swapToFileDragCatch(file);
+  }
+  applyFileDragCatchBridge(normalized);
+}
+
+function endFileDragCatch(_reason) {
+  if (!isFileDragCatching) return;
+  isFileDragCatching = false;
+  lastFileDragCatchPayload = null;
   window.electronAPI.resumeFromReaction();
 }
 
@@ -805,6 +904,9 @@ function swapToFile(file, state, useObjectChannel, options = {}) {
       if (miniLeftFlip) applyGlyphFlipCompensation(next);
       if (shouldUseCloudlingPointerBridge(currentState, file) && lastCloudlingPointerPayload) {
         callCloudlingPointerBridge(next, getDisplayedCloudlingPointerPayload(lastCloudlingPointerPayload));
+      }
+      if (isFileDragCatching && lastFileDragCatchPayload) {
+        callFileDragCatchBridge(next, lastFileDragCatchPayload);
       }
       scheduleLowPowerIdlePause();
     };

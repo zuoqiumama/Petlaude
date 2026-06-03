@@ -338,6 +338,20 @@ describe("renderer Cloudling pointer bridge", () => {
   });
 });
 
+describe("renderer file drag catch bridge", () => {
+  it("listens for file drag catch IPC and forwards direction to SVG documents", () => {
+    const source = fs.readFileSync(RENDERER, "utf8");
+    const preload = fs.readFileSync(PRELOAD, "utf8");
+
+    assert.ok(preload.includes('onStartFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-start"'));
+    assert.ok(preload.includes('onUpdateFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-update"'));
+    assert.ok(preload.includes('onEndFileDragCatch: (cb) => ipcRenderer.on("file-drag-catch-end"'));
+    assert.ok(source.includes("function startFileDragCatch(payload)"));
+    assert.ok(source.includes("__clawdSetFileDragCatch"));
+    assert.ok(source.includes("window.electronAPI.onStartFileDragCatch((payload) => startFileDragCatch(payload));"));
+  });
+});
+
 describe("renderer sound preload and warmup", () => {
   it("preloads sound files without playing a primer", () => {
     const harness = createRendererHarness();

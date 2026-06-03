@@ -78,6 +78,8 @@ function createHarness(overrides = {}) {
     focusSession: (sessionId, options) => calls.push(["focusSession", sessionId, options]),
     setLowPowerIdlePaused: (value) => calls.push(["setLowPowerIdlePaused", value]),
     revealSessionHud: () => calls.push(["revealSessionHud"]),
+    launchPetClickAction: () => calls.push(["launchPetClickAction"]),
+    handleDroppedFiles: (payload) => calls.push(["handleDroppedFiles", payload]),
     setPetHover: (value) => calls.push(["setPetHover", value]),
   });
   return { ipcMain, runtime, calls, state };
@@ -92,10 +94,15 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "drag-move",
     "end-drag-reaction",
     "exit-mini-mode",
+    "file-drag-catch-end",
+    "file-drag-catch-start",
+    "file-drag-catch-update",
+    "file-drop",
     "focus-terminal",
     "low-power-idle-paused",
     "pause-cursor-polling",
     "pet-hover",
+    "pet-interaction:launch-click-action",
     "pet-interaction:reveal-session-hud",
     "play-click-reaction",
     "resume-from-reaction",
@@ -113,6 +120,45 @@ test("pet interaction IPC delegates pet-interaction:reveal-session-hud to reveal
   ipcMain.send("pet-interaction:reveal-session-hud");
   assert.deepStrictEqual(calls.filter((c) => c[0] === "revealSessionHud"), [
     ["revealSessionHud"],
+  ]);
+});
+
+test("pet interaction IPC delegates pet-interaction:launch-click-action", () => {
+  const { ipcMain, calls } = createHarness();
+  ipcMain.send("pet-interaction:launch-click-action");
+  assert.deepStrictEqual(calls.filter((c) => c[0] === "launchPetClickAction"), [
+    ["launchPetClickAction"],
+  ]);
+});
+
+test("pet interaction IPC relays file drag catch events with sanitized direction payloads", () => {
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("file-drag-catch-start", { x: 2, y: -3, direction: "northwest" });
+  ipcMain.send("file-drag-catch-update", { x: -0.5, y: 0.25, direction: "left" });
+  ipcMain.send("file-drag-catch-end", "drop");
+
+  assert.deepStrictEqual(calls.filter((c) => c[0] === "sendToRenderer"), [
+    ["sendToRenderer", "file-drag-catch-start", { x: 1, y: -1, direction: "center" }],
+    ["sendToRenderer", "file-drag-catch-update", { x: -0.5, y: 0.25, direction: "left" }],
+    ["sendToRenderer", "file-drag-catch-end", "drop"],
+  ]);
+});
+
+test("pet interaction IPC forwards dropped file paths with bounded sanitization", () => {
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("file-drop", {
+    paths: [
+      "F:\\agentic\\repo\\demo.txt",
+      "",
+      42,
+      "F:\\agentic\\repo",
+    ],
+  });
+
+  assert.deepStrictEqual(calls.filter((c) => c[0] === "handleDroppedFiles"), [
+    ["handleDroppedFiles", { paths: ["F:\\agentic\\repo\\demo.txt", "F:\\agentic\\repo"] }],
   ]);
 });
 

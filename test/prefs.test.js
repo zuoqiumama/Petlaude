@@ -66,6 +66,12 @@ describe("prefs.getDefaults", () => {
       allowedTgUserId: "",
       targetSessionKey: "",
     });
+    assert.deepStrictEqual(d.petClickAction, {
+      enabled: false,
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "terminal",
+    });
   });
 
   it("seeds all known agents as enabled", () => {
@@ -262,6 +268,43 @@ describe("prefs.validate", () => {
       targetSessionKey: "telegram:987654321",
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(v.tgApproval, "botToken"), false);
+  });
+
+  it("normalizes pet click action settings", () => {
+    const v = prefs.validate({
+      petClickAction: {
+        enabled: true,
+        executablePath: "  C:\\Tools\\codex.cmd  ",
+        workspacePath: "  F:\\agentic\\clawd-on-desk  ",
+        launchMode: "direct",
+        extra: "ignored",
+      },
+    });
+    assert.deepStrictEqual(v.petClickAction, {
+      enabled: true,
+      executablePath: "C:\\Tools\\codex.cmd",
+      workspacePath: "F:\\agentic\\clawd-on-desk",
+      launchMode: "direct",
+    });
+    assert.deepStrictEqual(prefs.validate({ petClickAction: "bad" }).petClickAction, {
+      enabled: false,
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "terminal",
+    });
+    assert.deepStrictEqual(prefs.validate({
+      petClickAction: {
+        enabled: "yes",
+        executablePath: 42,
+        workspacePath: null,
+        launchMode: "shell",
+      },
+    }).petClickAction, {
+      enabled: false,
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "terminal",
+    });
   });
 
   it("keeps valid fields verbatim", () => {
@@ -896,11 +939,13 @@ describe("prefs.save", () => {
     const p = makeTempPath();
     const snap = prefs.getDefaults();
     snap.lang = "zh";
+    snap.appearanceMode = "light";
     snap.bubbleFollowPet = true;
     snap.x = 42;
     prefs.save(p, snap);
     const { snapshot } = prefs.load(p);
     assert.strictEqual(snapshot.lang, "zh");
+    assert.strictEqual(snapshot.appearanceMode, "light");
     assert.strictEqual(snapshot.bubbleFollowPet, true);
     assert.strictEqual(snapshot.x, 42);
     assert.strictEqual(snapshot.version, prefs.CURRENT_VERSION);

@@ -190,6 +190,38 @@ function registerSettingsIpc(options = {}) {
     return settingsController.applyCommand(payload.action, payload.payload);
   });
 
+  handle("settings:pick-pet-click-executable", async (event) => {
+    let result;
+    try {
+      result = await dialog.showOpenDialog(getDialogParent(event), {
+        title: "Choose default app",
+        properties: ["openFile"],
+      });
+    } catch (err) {
+      return { status: "error", message: `pick executable failed: ${err && err.message}` };
+    }
+    if (!result || result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { status: "cancel" };
+    }
+    return { status: "ok", path: result.filePaths[0] };
+  });
+
+  handle("settings:pick-pet-click-workspace", async (event) => {
+    let result;
+    try {
+      result = await dialog.showOpenDialog(getDialogParent(event), {
+        title: "Choose default workspace",
+        properties: ["openDirectory"],
+      });
+    } catch (err) {
+      return { status: "error", message: `pick workspace failed: ${err && err.message}` };
+    }
+    if (!result || result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { status: "cancel" };
+    }
+    return { status: "ok", path: result.filePaths[0] };
+  });
+
   handle("settings:pick-sound-file", async (event, payload) => {
     if (!payload || typeof payload !== "object") {
       return { status: "error", message: "pickSoundFile payload must be an object" };

@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      .catch-bob {
+        transform-origin: 7.5px 15px;
+        animation: catch-bob 0.8s infinite step-end;
+      }
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: eye-blink 3.6s infinite step-end;
+      }
+      .leg-a { animation: leg-a 0.8s infinite step-end; }
+      .leg-b { animation: leg-b 0.8s infinite step-end; }
+
+      @keyframes catch-bob {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(1px); }
+      }
+      @keyframes eye-blink {
+        0%, 44%, 50%, 100% { transform: scaleY(1); }
+        47% { transform: scaleY(0.1); }
+      }
+      @keyframes leg-a {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-1px); }
+      }
+      @keyframes leg-b {
+        0%, 100% { transform: translateY(-1px); }
+        50% { transform: translateY(0); }
+      }
+    </style>
+  </defs>
+
+  <g id="avoid-root">
+    <rect id="shadow-js" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+    <g id="catch-root" class="catch-bob">
+      <g id="legs" fill="#DE886D">
+        <rect class="leg-a" x="3" y="13" width="1" height="2"/>
+        <rect class="leg-b" x="5" y="13" width="1" height="2"/>
+        <rect class="leg-b" x="9" y="13" width="1" height="2"/>
+        <rect class="leg-a" x="11" y="13" width="1" height="2"/>
+      </g>
+
+      <g id="body-js" fill="#DE886D">
+        <rect id="torso" x="2" y="6" width="11" height="7"/>
+
+        <g id="left-arm">
+          <rect x="0" y="8" width="2" height="2"/>
+          <rect x="-1" y="6" width="2" height="2"/>
+        </g>
+        <g id="right-arm">
+          <rect x="13" y="8" width="2" height="2"/>
+          <rect x="14" y="6" width="2" height="2"/>
+        </g>
+      </g>
+
+      <g id="eyes-js" class="eyes-blink" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+  </g>
+
+  <script type="application/ecmascript"><![CDATA[
+    const avoidRoot = document.getElementById("avoid-root");
+    const leftArm = document.getElementById("left-arm");
+    const rightArm = document.getElementById("right-arm");
+    const shadow = document.getElementById("shadow-js");
+
+    function clamp(n, min, max) {
+      return Math.max(min, Math.min(max, Number.isFinite(n) ? n : 0));
+    }
+
+    function setPose(direction) {
+      if (direction === "left") {
+        leftArm.innerHTML = '<rect x="0" y="8" width="2" height="2"/><rect x="-3" y="8" width="3" height="2"/><rect x="-4" y="6" width="2" height="2"/>';
+        rightArm.innerHTML = '<rect x="13" y="8" width="2" height="2"/><rect x="12" y="6" width="2" height="2"/>';
+        return;
+      }
+      if (direction === "right") {
+        leftArm.innerHTML = '<rect x="1" y="8" width="2" height="2"/><rect x="1" y="6" width="2" height="2"/>';
+        rightArm.innerHTML = '<rect x="13" y="8" width="2" height="2"/><rect x="15" y="8" width="3" height="2"/><rect x="17" y="6" width="2" height="2"/>';
+        return;
+      }
+      leftArm.innerHTML = '<rect x="0" y="8" width="2" height="2"/><rect x="-1" y="6" width="2" height="2"/>';
+      rightArm.innerHTML = '<rect x="13" y="8" width="2" height="2"/><rect x="14" y="6" width="2" height="2"/>';
+    }
+
+    function setAvoidance(direction, x, y) {
+      let shiftX = 0;
+      let shiftY = 1;
+      if (direction === "left") {
+        shiftX = 8;
+        shiftY = 2;
+      } else if (direction === "right") {
+        shiftX = -8;
+        shiftY = 2;
+      } else {
+        shiftX = x <= 0 ? 7 : -7;
+        shiftY = y <= 0 ? 3 : -1;
+      }
+      avoidRoot.setAttribute("transform", "translate(" + shiftX + " " + shiftY + ")");
+    }
+
+    function setFileDragCatch(payload) {
+      const p = payload || {};
+      const x = clamp(Number(p.x), -1, 1);
+      const y = clamp(Number(p.y), -1, 1);
+      const direction = p.direction === "left" || p.direction === "right" || p.direction === "center"
+        ? p.direction
+        : (x < -0.25 ? "left" : (x > 0.25 ? "right" : "center"));
+
+      setPose(direction);
+      setAvoidance(direction, x, y);
+      shadow.setAttribute("transform", "translate(" + (x * 0.8).toFixed(2) + " 0)");
+    }
+
+    window.__clawdSetFileDragCatch = setFileDragCatch;
+    setFileDragCatch({ x: 0, direction: "center" });
+  ]]></script>
+</svg>

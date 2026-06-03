@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 8;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -82,6 +82,7 @@ const SCHEMA = {
   preMiniX: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
+  appearanceMode: { type: "string", default: "system", enum: ["system", "light", "dark"] },
   lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja"] },
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
@@ -226,6 +227,16 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => ({ ...DEFAULT_HARDWARE_BUDDY_SETTINGS }),
     normalize: normalizeHardwareBuddySettings,
+  },
+  petClickAction: {
+    type: "object",
+    defaultFactory: () => ({
+      enabled: false,
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "terminal",
+    }),
+    normalize: normalizePetClickAction,
   },
   // Background update-check toggle. When true, the scheduler in updater.js
   // runs a quiet GitHub discovery on a 12-hour cycle (packaged builds only).
@@ -425,6 +436,9 @@ function migrate(raw) {
     }
     out.version = 7;
   }
+  if (out.version < 8) {
+    out.version = 8;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -442,6 +456,25 @@ function normalizeDismissedUpdateVersions(value) {
     if (typeof key === "string" && key && value[key] === true) out[key] = true;
   }
   return out;
+}
+
+function normalizePetClickAction(value) {
+  const defaults = {
+    enabled: false,
+    executablePath: "",
+    workspacePath: "",
+    launchMode: "terminal",
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaults;
+  const executablePath = typeof value.executablePath === "string" ? value.executablePath.trim() : "";
+  const workspacePath = typeof value.workspacePath === "string" ? value.workspacePath.trim() : "";
+  const launchMode = value.launchMode === "direct" ? "direct" : "terminal";
+  return {
+    enabled: value.enabled === true,
+    executablePath,
+    workspacePath,
+    launchMode,
+  };
 }
 
 function normalizePositionDisplay(value) {

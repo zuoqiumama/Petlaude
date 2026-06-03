@@ -25,23 +25,24 @@ describe("floating-window-runtime", () => {
     assert.ok(!mainSource.includes("if (pendingPermissions.length) repositionBubbles();"));
   });
 
-  it("repositions permission bubbles only when pending entries exist and always repositions update bubble", () => {
+  it("repositions permission bubbles only when pending entries exist and always repositions action bubbles", () => {
     const calls = [];
     const pending = [];
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => pending,
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionFileDropBubble: () => calls.push("fileDrop"),
     });
 
     runtime.repositionFloatingBubbles();
     pending.push({ bubble: {} });
     runtime.repositionFloatingBubbles();
 
-    assert.deepStrictEqual(calls, ["update", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["update", "fileDrop", "permission", "update", "fileDrop"]);
   });
 
-  it("keeps anchored surface ordering as HUD, usage hover, then permission/update bubbles", () => {
+  it("keeps anchored surface ordering as HUD, usage hover, then permission/action bubbles", () => {
     const calls = [];
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: {} }],
@@ -49,11 +50,12 @@ describe("floating-window-runtime", () => {
       repositionUsageHover: () => calls.push("usageHover"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionFileDropBubble: () => calls.push("fileDrop"),
     });
 
     runtime.repositionAnchoredSurfaces();
 
-    assert.deepStrictEqual(calls, ["hud", "usageHover", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["hud", "usageHover", "permission", "update", "fileDrop"]);
   });
 
   it("syncs HUD and usage hover visibility before repositioning dependent bubbles", () => {
@@ -64,14 +66,15 @@ describe("floating-window-runtime", () => {
       syncUsageHoverVisibility: () => calls.push("syncUsageHover"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionFileDropBubble: () => calls.push("fileDrop"),
     });
 
     runtime.syncSessionHudVisibilityAndBubbles();
 
-    assert.deepStrictEqual(calls, ["syncHud", "syncUsageHover", "permission", "update"]);
+    assert.deepStrictEqual(calls, ["syncHud", "syncUsageHover", "permission", "update", "fileDrop"]);
   });
 
-  it("restores live permission bubbles and update bubble visibility when the pet is shown", () => {
+  it("restores live permission bubbles and action bubble visibility when the pet is shown", () => {
     const calls = [];
     const live = makeWindow("live", calls);
     const destroyed = makeWindow("destroyed", calls, true);
@@ -79,6 +82,7 @@ describe("floating-window-runtime", () => {
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
       keepOutOfTaskbar: (win) => calls.push(["taskbar", win === live ? "live" : "other"]),
       syncUpdateBubbleVisibility: () => calls.push(["syncUpdate"]),
+      syncFileDropBubbleVisibility: () => calls.push(["syncFileDrop"]),
       syncUsageHoverVisibility: () => calls.push(["syncUsageHover"]),
     });
 
@@ -89,16 +93,18 @@ describe("floating-window-runtime", () => {
       ["taskbar", "live"],
       ["syncUsageHover"],
       ["syncUpdate"],
+      ["syncFileDrop"],
     ]);
   });
 
-  it("hides live permission bubbles and the update bubble when the pet is hidden", () => {
+  it("hides live permission bubbles and action bubbles when the pet is hidden", () => {
     const calls = [];
     const live = makeWindow("live", calls);
     const destroyed = makeWindow("destroyed", calls, true);
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: live }, { bubble: destroyed }, { bubble: null }],
       hideUpdateBubble: () => calls.push(["hideUpdate"]),
+      hideFileDropBubble: () => calls.push(["hideFileDrop"]),
       hideUsageHover: () => calls.push(["hideUsageHover"]),
     });
 
@@ -108,6 +114,7 @@ describe("floating-window-runtime", () => {
       ["hide", "live"],
       ["hideUsageHover"],
       ["hideUpdate"],
+      ["hideFileDrop"],
     ]);
   });
 });

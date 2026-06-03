@@ -75,6 +75,35 @@
     return helpers.t(key);
   }
 
+  function label(key, fallback) {
+    const value = t(key);
+    return value === key ? fallback : value;
+  }
+
+  function readPetClickAction() {
+    const raw = state.snapshot && state.snapshot.petClickAction;
+    return {
+      enabled: !!(raw && raw.enabled),
+      executablePath: raw && typeof raw.executablePath === "string" ? raw.executablePath : "",
+      workspacePath: raw && typeof raw.workspacePath === "string" ? raw.workspacePath : "",
+      launchMode: raw && raw.launchMode === "direct" ? "direct" : "terminal",
+    };
+  }
+
+  function updatePetClickAction(patch) {
+    const next = { ...readPetClickAction(), ...(patch || {}) };
+    return window.settingsAPI.update("petClickAction", next).then((result) => {
+      if (!result || result.status !== "ok") {
+        const msg = (result && result.message) || "unknown error";
+        ops.showToast(t("toastSaveFailed") + msg, { error: true });
+      }
+      return result;
+    }).catch((err) => {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return { status: "error", message: err && err.message };
+    });
+  }
+
   function render(parent) {
     const h1 = document.createElement("h1");
     h1.textContent = t("settingsTitle");
@@ -112,6 +141,10 @@
       buildSessionHudGroup(),
       buildSessionCleanupGroup(),
       buildDashboardRow(),
+    ]));
+
+    parent.appendChild(helpers.buildSection(label("sectionPetClickAction", "Pet click action"), [
+      buildPetClickActionGroup(),
     ]));
 
     const manageClaudeHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
@@ -174,6 +207,131 @@
       if (actionId !== "disconnect") return { status: "ok", noop: true };
       return window.settingsAPI.command("uninstallHooks");
     });
+  }
+
+  function buildPetClickActionGroup() {
+    const action = readPetClickAction();
+    const masterRow = document.createElement("div");
+    masterRow.className = "row";
+    masterRow.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
+    masterRow.querySelector(".row-label").textContent = label("rowPetClickAction", "Double-click pet to open default app");
+    masterRow.querySelector(".row-desc").textContent = label(
+      "rowPetClickActionDesc",
+      "Double-click opens your chosen executable and keeps the existing pet reaction. Single click still shows the Session HUD."
+    );
+    const sw = masterRow.querySelector(".switch");
+    helpers.setSwitchVisual(sw, action.enabled);
+    helpers.attachAnimatedSwitch(sw, {
+      getCommittedVisual: () => readPetClickAction().enabled,
+      getTransientState: () => state.transientUiState.generalSwitches.get("petClickAction.enabled"),
+      setTransientState: (value) => state.transientUiState.generalSwitches.set("petClickAction.enabled", value),
+      clearTransientState: () => state.transientUiState.generalSwitches.delete("petClickAction.enabled"),
+      invoke: () => updatePetClickAction({ enabled: !readPetClickAction().enabled }),
+    });
+
+    return buildOptionList("pet-click-action-option-list", [
+      masterRow,
+      buildPetClickPathRow({
+        kind: "executablePath",
+        labelText: label("rowPetClickExecutable", "Default executable"),
+        descText: label("rowPetClickExecutableDesc", "Choose codex, claude, an editor, or any executable file."),
+        pick: () => window.settingsAPI.pickPetClickExecutable(),
+      }),
+      buildPetClickPathRow({
+        kind: "workspacePath",
+        labelText: label("rowPetClickWorkspace", "Default workspace"),
+        descText: label("rowPetClickWorkspaceDesc", "Optional. CLI agents start in this folder when Terminal mode is used."),
+        pick: () => window.settingsAPI.pickPetClickWorkspace(),
+      }),
+      buildPetClickLaunchModeRow(),
+    ]);
+  }
+
+  function buildPetClickPathRow({ kind, labelText, descText, pick }) {
+    const row = document.createElement("div");
+    row.className = "row pet-click-path-row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control pet-click-path-control">` +
+        `<span class="pet-click-path-value"></span>` +
+        `<button type="button" class="soft-btn"></button>` +
+        `<button type="button" class="soft-btn pet-click-clear"></button>` +
+      `</div>`;
+    row.querySelector(".row-label").textContent = labelText;
+    row.querySelector(".row-desc").textContent = descText;
+    const valueEl = row.querySelector(".pet-click-path-value");
+    const chooseBtn = row.querySelector("button");
+    const clearBtn = row.querySelector(".pet-click-clear");
+    chooseBtn.textContent = label("actionChoose", "Choose");
+    clearBtn.textContent = label("actionClear", "Clear");
+
+    function sync() {
+      const value = readPetClickAction()[kind] || "";
+      valueEl.textContent = value || label("valueNotSet", "Not set");
+      valueEl.classList.toggle("empty", !value);
+      clearBtn.disabled = !value;
+    }
+
+    chooseBtn.addEventListener("click", () => {
+      Promise.resolve()
+        .then(pick)
+        .then((result) => {
+          if (!result || result.status === "cancel") return null;
+          if (result.status !== "ok" || !result.path) {
+            const msg = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + msg, { error: true });
+            return null;
+          }
+          return updatePetClickAction({ [kind]: result.path });
+        })
+        .then(sync)
+        .catch((err) => ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true }));
+    });
+    clearBtn.addEventListener("click", () => {
+      updatePetClickAction({ [kind]: "" }).then(sync);
+    });
+    sync();
+    return row;
+  }
+
+  function buildPetClickLaunchModeRow() {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML =
+      `<div class="row-text">` +
+        `<span class="row-label"></span>` +
+        `<span class="row-desc"></span>` +
+      `</div>` +
+      `<div class="row-control"><div class="segmented pet-click-mode"></div></div>`;
+    row.querySelector(".row-label").textContent = label("rowPetClickLaunchMode", "Launch mode");
+    row.querySelector(".row-desc").textContent = label(
+      "rowPetClickLaunchModeDesc",
+      "Terminal is best for CLI agents; Direct is best for GUI apps."
+    );
+    const segmented = row.querySelector(".segmented");
+    for (const [mode, text] of [["terminal", "Terminal"], ["direct", "Direct"]]) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = text;
+      btn.classList.toggle("active", readPetClickAction().launchMode === mode);
+      btn.addEventListener("click", () => {
+        updatePetClickAction({ launchMode: mode }).then((result) => {
+          if (!result || result.status !== "ok") return;
+          for (const other of segmented.querySelectorAll("button")) other.classList.remove("active");
+          btn.classList.add("active");
+        });
+      });
+      segmented.appendChild(btn);
+    }
+    return row;
   }
 
   function buildDashboardRow() {

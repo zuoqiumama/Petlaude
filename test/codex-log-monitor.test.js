@@ -381,6 +381,126 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
+  it("respects CODEX_HOME when resolving the default sessions directory", async () => {
+    const oldCodexHome = process.env.CODEX_HOME;
+    const codexHome = path.join(tmpDir, "codex-home");
+    const now = new Date();
+    const codexDateDir = path.join(
+      codexHome,
+      "sessions",
+      String(now.getFullYear()),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0")
+    );
+    fs.mkdirSync(codexDateDir, { recursive: true });
+    const testFile = path.join(codexDateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
+      '{"type":"event_msg","payload":{"type":"task_started"}}',
+      '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":34,"output_tokens":11,"total_tokens":45},"total_token_usage":{"input_tokens":34,"output_tokens":11,"total_tokens":45}}}}',
+    ].join("\n") + "\n");
+
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const config = {
+        ...codexConfig,
+        logConfig: { ...codexConfig.logConfig, pollIntervalMs: 50 },
+      };
+      const usageEvent = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("timed out waiting for CODEX_HOME token_count")), 750);
+        monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+          if (event !== "event_msg:token_count") return;
+          clearTimeout(timer);
+          resolve({ sid, state, extra });
+        });
+        monitor.start();
+      });
+
+      assert.strictEqual(usageEvent.sid, EXPECTED_SID);
+      assert.strictEqual(usageEvent.state, "thinking");
+      assert.deepStrictEqual(usageEvent.extra.tokenUsage, {
+        input_tokens: 34,
+        output_tokens: 11,
+        total_tokens: 45,
+      });
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+    }
+  });
+
+  it("emits Codex Desktop nested last_token_usage once per cumulative total", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp","originator":"Codex Desktop","source":"vscode"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 3658,
+              cached_input_tokens: 3072,
+              output_tokens: 209,
+              reasoning_output_tokens: 0,
+              total_tokens: 3867,
+            },
+            last_token_usage: {
+              input_tokens: 3658,
+              cached_input_tokens: 3072,
+              output_tokens: 209,
+              reasoning_output_tokens: 0,
+              total_tokens: 3867,
+            },
+            model_context_window: 258400,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 3658,
+              cached_input_tokens: 3072,
+              output_tokens: 209,
+              reasoning_output_tokens: 0,
+              total_tokens: 3867,
+            },
+            last_token_usage: {
+              input_tokens: 3658,
+              cached_input_tokens: 3072,
+              output_tokens: 209,
+              reasoning_output_tokens: 0,
+              total_tokens: 3867,
+            },
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const usageEvents = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      if (event !== "event_msg:token_count") return;
+      usageEvents.push({ sid, state, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.strictEqual(usageEvents.length, 2);
+    assert.deepStrictEqual(usageEvents.map((entry) => entry.extra.tokenUsage), [
+      { input_tokens: 3658, output_tokens: 209, total_tokens: 3867 },
+      { input_tokens: 3658, output_tokens: 209, total_tokens: 3867 },
+    ]);
+    assert.strictEqual(
+      usageEvents[0].extra.usageEventId,
+      usageEvents[1].extra.usageEventId,
+      "unchanged cumulative totals should dedupe downstream"
+    );
+  });
+
   it("should skip old files (>5min mtime)", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');

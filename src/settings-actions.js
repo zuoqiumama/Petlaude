@@ -353,6 +353,25 @@ const updateRegistry = {
     return validateHardwareBuddySettings(value);
   },
 
+  petClickAction(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petClickAction must be a plain object" };
+    }
+    if (typeof value.enabled !== "boolean") {
+      return { status: "error", message: "petClickAction.enabled must be a boolean" };
+    }
+    if (typeof value.executablePath !== "string") {
+      return { status: "error", message: "petClickAction.executablePath must be a string" };
+    }
+    if (typeof value.workspacePath !== "string") {
+      return { status: "error", message: "petClickAction.workspacePath must be a string" };
+    }
+    if (value.launchMode !== "terminal" && value.launchMode !== "direct") {
+      return { status: "error", message: "petClickAction.launchMode must be terminal or direct" };
+    }
+    return { status: "ok" };
+  },
+
   shortcuts: {
     validate(value) {
       return validateShortcutMapShape(value);

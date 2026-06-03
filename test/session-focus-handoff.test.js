@@ -21,6 +21,7 @@ describe("session focus handoff", () => {
       sessionId: "codex:thread",
       requestSource: "dashboard",
       url: "codex://threads/thread",
+      platform: "darwin",
       focusLog: (line) => logs.push(line),
     });
 
@@ -44,6 +45,7 @@ describe("session focus handoff", () => {
       sessionId: "codex:thread",
       requestSource: "hud",
       url: "codex://threads/thread",
+      platform: "darwin",
       focusLog: (line) => logs.push(line),
       focusTerminalSession: (...args) => {
         terminalCalls.push(args);
@@ -58,6 +60,54 @@ describe("session focus handoff", () => {
     assert.ok(!logs.some((line) => line.includes("codex-thread-fallback-no-source-pid")));
   });
 
+  it("skips Codex Desktop deep links on Windows when a focus pid is available", async () => {
+    const opened = [];
+    const logs = [];
+    const terminalCalls = [];
+    const focusEntry = { id: "codex:thread", agentId: "codex", sourcePid: 123 };
+
+    await focusCodexThreadTarget({
+      shell: {
+        openExternal: async (url) => opened.push(url),
+      },
+      focusEntry,
+      sessionId: "codex:thread",
+      requestSource: "hud",
+      url: "codex://threads/thread",
+      platform: "win32",
+      focusLog: (line) => logs.push(line),
+      focusTerminalSession: (...args) => {
+        terminalCalls.push(args);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(opened, []);
+    assert.deepStrictEqual(terminalCalls, [[focusEntry, "codex:thread", "hud"]]);
+    assert.ok(logs.some((line) => line.includes("reason=windows-terminal-fallback")));
+  });
+
+  it("does not open broken Codex Desktop deep links on Windows without a focus pid", async () => {
+    const opened = [];
+    const logs = [];
+
+    await focusCodexThreadTarget({
+      shell: {
+        openExternal: async (url) => opened.push(url),
+      },
+      focusEntry: { id: "codex:thread", agentId: "codex" },
+      sessionId: "codex:thread",
+      requestSource: "hud",
+      url: "codex://threads/thread",
+      platform: "win32",
+      focusLog: (line) => logs.push(line),
+      focusTerminalSession: () => false,
+    });
+
+    assert.deepStrictEqual(opened, []);
+    assert.ok(logs.some((line) => line.includes("reason=windows-deeplink-disabled-no-source-pid")));
+  });
+
   it("logs when Codex Desktop deep link fallback has no terminal source pid", async () => {
     const logs = [];
 
@@ -70,6 +120,7 @@ describe("session focus handoff", () => {
       focusEntry: { id: "codex:thread", agentId: "codex" },
       sessionId: "codex:thread",
       url: "codex://threads/thread",
+      platform: "darwin",
       focusLog: (line) => logs.push(line),
       focusTerminalSession: () => false,
     });

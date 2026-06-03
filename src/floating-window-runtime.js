@@ -16,17 +16,21 @@ function createFloatingWindowRuntime(options = {}) {
   const keepOutOfTaskbar = options.keepOutOfTaskbar || noop;
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
   const repositionUpdateBubble = options.repositionUpdateBubble || noop;
+  const repositionFileDropBubble = options.repositionFileDropBubble || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
   const repositionUsageHover = options.repositionUsageHover || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const syncUsageHoverVisibility = options.syncUsageHoverVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
+  const syncFileDropBubbleVisibility = options.syncFileDropBubbleVisibility || noop;
   const hideUpdateBubble = options.hideUpdateBubble || noop;
+  const hideFileDropBubble = options.hideFileDropBubble || noop;
   const hideUsageHover = options.hideUsageHover || noop;
 
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
     repositionUpdateBubble();
+    repositionFileDropBubble();
   }
 
   function repositionAnchoredSurfaces() {
@@ -51,6 +55,7 @@ function createFloatingWindowRuntime(options = {}) {
     }
     syncUsageHoverVisibility();
     syncUpdateBubbleVisibility();
+    syncFileDropBubbleVisibility();
   }
 
   function hideFloatingSurfacesForPet() {
@@ -62,6 +67,7 @@ function createFloatingWindowRuntime(options = {}) {
     }
     hideUsageHover();
     hideUpdateBubble();
+    hideFileDropBubble();
   }
 
   return {

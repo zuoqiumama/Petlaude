@@ -397,6 +397,16 @@ body { padding: 6px; }
   background: #57534e;
 }
 
+/* ── Go-to button (task complete primary action) ── */
+.btn-go {
+  background: #3b82f6;
+  color: #fff;
+  border: 1px solid transparent;
+}
+.btn-go:hover:not(:disabled) {
+  background: #2563eb;
+}
+
 .btn-deny {
   background: var(--deny-bg);
   color: var(--deny-color);

@@ -412,6 +412,26 @@ h1 {
 
 .chart-axis { stroke: rgba(28, 25, 23, 0.12); stroke-width: 1; }
 
+.chart-grid {
+  stroke: rgba(28, 25, 23, 0.05);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  pointer-events: none;
+}
+
+.chart-y-label {
+  fill: var(--subtle);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-y-label-right {
+  fill: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .chart-day {
   fill: var(--subtle);
   font-size: 10px;
@@ -723,6 +743,7 @@ button:disabled {
   .usage-swatch,
   .legend-swatch { box-shadow: inset 0 0 0 1px rgba(250, 250, 248, 0.18); }
   .chart-axis { stroke: rgba(250, 250, 248, 0.12); }
+  .chart-grid { stroke: rgba(250, 250, 248, 0.06); }
   .card:hover { border-color: rgba(250, 250, 248, 0.14); }
   .session-title-input:focus { box-shadow: 0 0 0 3px rgba(120, 113, 108, 0.24); }
   button:hover:not(:disabled) { box-shadow: 0 4px 12px rgba(120, 113, 108, 0.3); }

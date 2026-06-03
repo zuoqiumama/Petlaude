@@ -43,6 +43,7 @@ describe("visible margin envelopes", () => {
 
     assert.ok(files.includes("clawd-working-typing.svg"));
     assert.ok(files.includes("clawd-react-drag.svg"));
+    assert.ok(files.includes("clawd-file-drop-catch.svg"));
     assert.ok(!files.includes("clawd-mini-idle.svg"));
     assert.ok(!files.some((file) => file.startsWith("mini-")));
   });

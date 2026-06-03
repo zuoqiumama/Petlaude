@@ -259,6 +259,35 @@ describe("updateRegistry pure-data validators", () => {
     );
   });
 
+  it("petClickAction accepts only the normalized launcher settings shape", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petClickAction({
+      enabled: true,
+      executablePath: "C:\\Tools\\codex.exe",
+      workspacePath: "C:\\work",
+      launchMode: "terminal",
+    }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.petClickAction({
+      enabled: false,
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "direct",
+    }, deps).status, "ok");
+    assert.strictEqual(updateRegistry.petClickAction(null, deps).status, "error");
+    assert.strictEqual(updateRegistry.petClickAction({
+      enabled: "yes",
+      executablePath: "",
+      workspacePath: "",
+      launchMode: "terminal",
+    }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petClickAction({
+      enabled: true,
+      executablePath: "codex",
+      workspacePath: "",
+      launchMode: "browser",
+    }, deps).status, "error");
+  });
+
   it("shortcuts commit validator accepts only known keys with string/null values", () => {
     const entry = updateRegistry.shortcuts;
     const deps = { snapshot: baseSnapshot };

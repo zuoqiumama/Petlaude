@@ -23,6 +23,7 @@ const suggestionsContainer = document.getElementById("suggestions");
 const headerTitle = document.querySelector(".header-title");
 const sessionTag = document.getElementById("sessionTag");
 let elicitationMode = false;
+let taskCompleteMode = false;
 let elicitationQuestions = [];
 let elicitationAnswers = {};
 let activeQuestionIndex = 0;
@@ -56,6 +57,7 @@ const BUBBLE_STRINGS = {
     alwaysAllowRule: "Always allow `{rule}`",
     alwaysAllow: "Always allow",
     permissionRequest: "Permission Request",
+    agentPermissionRequest: "{agent} Permission Request",
     allow: "Allow",
     deny: "Deny",
     alwaysAllowBlanket: "Always Allow (blanket)",
@@ -78,6 +80,10 @@ const BUBBLE_STRINGS = {
     planReview: "Plan Review",
     approve: "Approve",
     reject: "Reject",
+    taskComplete: "Task Complete",
+    agentTaskComplete: "{agent} Task Complete",
+    goToAgent: "Go to",
+    taskDone: "Task finished — click to focus the agent window.",
   },
   zh: {
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
@@ -86,6 +92,7 @@ const BUBBLE_STRINGS = {
     alwaysAllowRule: "\u59CB\u7EC8\u5141\u8BB8 `{rule}`",
     alwaysAllow: "\u59CB\u7EC8\u5141\u8BB8",
     permissionRequest: "\u6743\u9650\u8BF7\u6C42",
+    agentPermissionRequest: "{agent} \u6743\u9650\u8BF7\u6C42",
     allow: "\u6279\u51C6",
     deny: "\u62D2\u7EDD",
     alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
@@ -108,6 +115,10 @@ const BUBBLE_STRINGS = {
     planReview: "\u8BA1\u5212\u5BA1\u6279",
     approve: "\u6279\u51C6",
     reject: "\u62D2\u7EDD",
+    taskComplete: "\u4EFB\u52A1\u5B8C\u6210",
+    agentTaskComplete: "{agent} \u4EFB\u52A1\u5B8C\u6210",
+    goToAgent: "\u8F6C\u5230",
+    taskDone: "\u4EFB\u52A1\u5DF2\u5B8C\u6210\u2014\u2014\u70B9\u51FB\u53EF\u805A\u7126\u5230\u667A\u80FD\u4F53\u7A97\u53E3\u3002",
   },
   "zh-TW": {
     autoAcceptEdits: "自動接受編輯",
@@ -116,6 +127,7 @@ const BUBBLE_STRINGS = {
     alwaysAllowRule: "一律允許 `{rule}`",
     alwaysAllow: "一律允許",
     permissionRequest: "權限請求",
+    agentPermissionRequest: "{agent} \u6B0A\u9650\u8ACB\u6C42",
     allow: "允許",
     deny: "拒絕",
     alwaysAllowBlanket: "一律允許（全部）",
@@ -138,6 +150,10 @@ const BUBBLE_STRINGS = {
     planReview: "計畫審查",
     approve: "允許",
     reject: "拒絕",
+    taskComplete: "任務完成",
+    agentTaskComplete: "{agent} 任務完成",
+    goToAgent: "轉到",
+    taskDone: "任務已完成——點擊可聚焦到智能體視窗。",
   },
   ko: {
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
@@ -146,6 +162,7 @@ const BUBBLE_STRINGS = {
     alwaysAllowRule: "\uD56D\uC0C1 \uD5C8\uC6A9 `{rule}`",
     alwaysAllow: "\uD56D\uC0C1 \uD5C8\uC6A9",
     permissionRequest: "\uAD8C\uD55C \uC694\uCCAD",
+    agentPermissionRequest: "{agent} \uAD8C\uD55C \uC694\uCCAD",
     allow: "\uD5C8\uC6A9",
     deny: "\uAC70\uBD80",
     alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
@@ -168,6 +185,10 @@ const BUBBLE_STRINGS = {
     planReview: "\uACC4\uD68D \uAC80\uD1A0",
     approve: "\uC2B9\uC778",
     reject: "\uAC70\uBD80",
+    taskComplete: "\uC791\uC5C5 \uC644\uB8CC",
+    agentTaskComplete: "{agent} \uC791\uC5C5 \uC644\uB8CC",
+    goToAgent: "\uC774\uB3D9",
+    taskDone: "\uC791\uC5C5\uC774 \uC644\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4 \u2014 \uD074\uB9AD\uD558\uC5EC \uC5D0\uC774\uC804\uD2B8 \uCC3D\uC73C\uB85C \uC774\uB3D9\uD558\uC138\uC694.",
   },
   ja: {
     autoAcceptEdits: "編集を自動承認",
@@ -176,6 +197,7 @@ const BUBBLE_STRINGS = {
     alwaysAllowRule: "`{rule}` を常に許可",
     alwaysAllow: "常に許可",
     permissionRequest: "権限リクエスト",
+    agentPermissionRequest: "{agent} \u6A29\u9650\u30EA\u30AF\u30A8\u30B9\u30C8",
     allow: "許可",
     deny: "拒否",
     alwaysAllowBlanket: "常に許可（包括）",
@@ -198,6 +220,10 @@ const BUBBLE_STRINGS = {
     planReview: "計画レビュー",
     approve: "承認",
     reject: "却下",
+    taskComplete: "タスク完了",
+    agentTaskComplete: "{agent} タスク完了",
+    goToAgent: "移動",
+    taskDone: "タスクが完了しました——クリックでエージェントウィンドウにフォーカスします。",
   },
 };
 
@@ -209,6 +235,12 @@ function bubbleText(lang, key, vars) {
     value = value.replace(`{${name}}`, replacement);
   }
   return value;
+}
+
+function permissionRequestTitle(data) {
+  const agent = typeof data.agentName === "string" ? data.agentName.trim() : "";
+  if (!agent) return bubbleText(data.lang, "permissionRequest");
+  return bubbleText(data.lang, "agentPermissionRequest", { agent });
 }
 
 function getSuggestionLabel(s, lang) {
@@ -305,6 +337,7 @@ function resetBubbleContent() {
     heightReportFrame = 0;
   }
   elicitationMode = false;
+  taskCompleteMode = false;
   elicitationQuestions = [];
   elicitationAnswers = {};
   activeQuestionIndex = 0;
@@ -320,6 +353,7 @@ function resetBubbleContent() {
   stopMarquee();
   btnAllow.style.display = "";
   btnAllow.disabled = false;
+  btnAllow.classList.remove("btn-go");
   btnDeny.style.display = "";
   btnDeny.disabled = false;
   suggestionsContainer.innerHTML = "";
@@ -681,7 +715,7 @@ function show(data) {
   //   3. "Always Allow" button maps to reply="always" via "opencode-always"
   //      behavior (handleDecide special-cases this).
   if (data.isOpencode) {
-    headerTitle.textContent = bubbleText(data.lang, "permissionRequest");
+    headerTitle.textContent = permissionRequestTitle(data);
 
     const rawName = data.toolName || "unknown";
     const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
@@ -779,12 +813,42 @@ function show(data) {
     return;
   }
 
+  // Task complete notify mode — shows which agent finished, with "Go to" button
+  if (data.isTaskComplete) {
+    taskCompleteMode = true;
+    const agent = data.agentName || data.agentId || "Agent";
+    headerTitle.textContent = bubbleText(data.lang, "agentTaskComplete", { agent });
+    toolPillText.textContent = (data.agentId || "agent").toUpperCase();
+    toolPill.setAttribute("data-tool", data.agentId || "");
+    toolPill.style.display = "";
+
+    const lines = [];
+    if (data.sessionFolder) lines.push(data.sessionFolder);
+    if (data.taskSummary) lines.push(data.taskSummary);
+    commandBlock.textContent = lines.length > 0
+      ? lines.join(" — ")
+      : bubbleText(data.lang, "taskDone");
+
+    // Primary button: "Go to"
+    btnAllow.textContent = bubbleText(data.lang, "goToAgent");
+    btnAllow.classList.add("btn-go");
+    btnAllow.disabled = false;
+
+    // Secondary button: "Got it"
+    btnDeny.textContent = bubbleText(data.lang, "gotIt");
+    btnDeny.disabled = false;
+
+    suggestionsContainer.innerHTML = "";
+    revealCard();
+    return;
+  }
+
   const isPlanReview = data.toolName === "ExitPlanMode";
 
   // Header
   headerTitle.textContent = isPlanReview
     ? bubbleText(data.lang, "planReview")
-    : bubbleText(data.lang, "permissionRequest");
+    : permissionRequestTitle(data);
   toolPill.style.display = isPlanReview ? "none" : "";
   btnDeny.style.display = isPlanReview ? "none" : "";
 
@@ -876,6 +940,12 @@ btnAllow.addEventListener("click", () => {
     handleElicitationPrimaryAction();
     return;
   }
+  if (taskCompleteMode) {
+    btnAllow.textContent = "...";
+    disableAll();
+    window.bubbleAPI.decide("task-complete-go");
+    return;
+  }
   btnAllow.textContent = "...";
   disableAll();
   window.bubbleAPI.decide("allow");
@@ -886,17 +956,21 @@ btnDeny.addEventListener("click", () => {
     handleElicitationBackAction();
     return;
   }
+  if (taskCompleteMode) {
+    btnDeny.textContent = "...";
+    disableAll();
+    window.bubbleAPI.decide("got-it");
+    return;
+  }
   btnDeny.textContent = "...";
   disableAll();
   window.bubbleAPI.decide("deny");
 });
 
-// Elicitation-only Enter-to-submit: selecting a preset radio/checkbox then
-// pressing Enter should send. textarea has its own Enter handler so we skip
-// it here to avoid double-submit. Deliberately gated on elicitationMode so
-// regular permission bubbles never auto-Allow on Enter.
+// Enter-to-submit for elicitation and task-complete modes.
+// Regular permission bubbles never auto-Act on Enter.
 document.addEventListener("keydown", (e) => {
-  if (!elicitationMode) return;
+  if (!elicitationMode && !taskCompleteMode) return;
   if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
   if (e.target && e.target.tagName === "TEXTAREA") return;
   if (btnAllow.disabled) return;

@@ -27,7 +27,12 @@ contextBridge.exposeInMainWorld("hitAPI", {
   exitMiniMode: () => ipcRenderer.send("exit-mini-mode"),
   showDashboard: () => ipcRenderer.send("show-dashboard"),
   revealSessionHud: () => ipcRenderer.send("pet-interaction:reveal-session-hud"),
+  launchClickAction: () => ipcRenderer.send("pet-interaction:launch-click-action"),
   petHover: (hovered) => ipcRenderer.send("pet-hover", !!hovered),
+  startFileDragCatch: (payload) => ipcRenderer.send("file-drag-catch-start", payload),
+  updateFileDragCatch: (payload) => ipcRenderer.send("file-drag-catch-update", payload),
+  endFileDragCatch: (reason) => ipcRenderer.send("file-drag-catch-end", reason),
+  dropFiles: (payload) => ipcRenderer.send("file-drop", payload),
   // Reaction triggers → main → renderWin
   startDragReaction: () => ipcRenderer.send("start-drag-reaction"),
   endDragReaction: () => ipcRenderer.send("end-drag-reaction"),

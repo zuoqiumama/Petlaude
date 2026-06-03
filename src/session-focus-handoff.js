@@ -10,12 +10,22 @@ function focusCodexThreadTarget({
   sessionId,
   requestSource = "dashboard",
   url,
+  platform = process.platform,
   focusLog = () => {},
   focusTerminalSession = () => false,
 }) {
-  if (!url || !shell || typeof shell.openExternal !== "function") return null;
+  if (!url) return null;
   const id = String(sessionId || (focusEntry && focusEntry.id) || "");
   focusLog(`focus request source=${requestSource} sid=${id} agent=${(focusEntry && focusEntry.agentId) || "-"} target=codex-thread`);
+  if (platform === "win32") {
+    if (focusTerminalSession(focusEntry, id, requestSource)) {
+      focusLog(`focus result branch=codex-thread reason=windows-terminal-fallback source=${requestSource} sid=${id}`);
+    } else {
+      focusLog(`focus result branch=none reason=windows-deeplink-disabled-no-source-pid source=${requestSource} sid=${id}`);
+    }
+    return Promise.resolve();
+  }
+  if (!shell || typeof shell.openExternal !== "function") return null;
   return shell.openExternal(url)
     .then(() => {
       focusLog(`focus result branch=codex-thread reason=opened source=${requestSource} sid=${id}`);

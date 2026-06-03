@@ -24,6 +24,7 @@ let currentSvg = null;
 let currentState = null;
 let miniMode = false;
 let dndEnabled = false;
+let petClickActionEnabled = false;
 
 window.hitAPI.onStateSync((data) => {
   if (data.currentSvg !== undefined) currentSvg = data.currentSvg;
@@ -33,6 +34,7 @@ window.hitAPI.onStateSync((data) => {
     area.style.cursor = miniMode ? "default" : "";
   }
   if (data.dndEnabled !== undefined) dndEnabled = data.dndEnabled;
+  if (data.petClickActionEnabled !== undefined) petClickActionEnabled = !!data.petClickActionEnabled;
 });
 
 // --- Drag state ---
@@ -42,6 +44,7 @@ let mouseDownX, mouseDownY;
 let dragMoveRAF = null;
 const DRAG_THRESHOLD = 3;
 let hoverInside = false;
+let fileDragCatchActive = false;
 
 // --- Reaction state (tracked here to gate input) ---
 let isReacting = false;
@@ -78,9 +81,91 @@ function setHoverInside(value) {
   }
 }
 
+function hasFileDragPayload(e) {
+  const dt = e && e.dataTransfer;
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  if (types.includes("Files")) return true;
+  const items = Array.from(dt.items || []);
+  if (items.some((item) => item && item.kind === "file")) return true;
+  return !!(dt.files && dt.files.length > 0);
+}
+
+function canPlayFileDragCatch() {
+  return !!_getReaction("fileDropCatch") && !miniMode && !dndEnabled && !isDragging;
+}
+
+function preventFileDragDefault(e) {
+  if (!e) return;
+  if (typeof e.preventDefault === "function") e.preventDefault();
+  if (typeof e.stopPropagation === "function") e.stopPropagation();
+  try {
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  } catch {}
+}
+
+function clampUnit(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(-1, Math.min(1, value));
+}
+
+function roundUnit(value) {
+  return Math.round(clampUnit(value) * 100) / 100;
+}
+
+function buildFileDragCatchPayload(e) {
+  const rect = area.getBoundingClientRect
+    ? area.getBoundingClientRect()
+    : { left: 0, top: 0, width: area.offsetWidth || 1, height: area.offsetHeight || 1 };
+  const width = rect.width || area.offsetWidth || 1;
+  const height = rect.height || area.offsetHeight || 1;
+  const x = roundUnit((((e.clientX || 0) - rect.left) / width) * 2 - 1);
+  const y = roundUnit((((e.clientY || 0) - rect.top) / height) * 2 - 1);
+  const direction = x < -0.25 ? "left" : (x > 0.25 ? "right" : "center");
+  return { x, y, direction };
+}
+
+function handleFileDragStartOrUpdate(e, phase) {
+  if (!hasFileDragPayload(e) || !canPlayFileDragCatch()) return;
+  preventFileDragDefault(e);
+  const payload = buildFileDragCatchPayload(e);
+  if (!fileDragCatchActive || phase === "start") {
+    fileDragCatchActive = true;
+    window.hitAPI.startFileDragCatch(payload);
+    return;
+  }
+  window.hitAPI.updateFileDragCatch(payload);
+}
+
+function getDroppedFilePaths(e) {
+  const dt = e && e.dataTransfer;
+  const files = Array.from((dt && dt.files) || []);
+  const paths = [];
+  for (const file of files) {
+    const filePath = file && typeof file.path === "string" ? file.path.trim() : "";
+    if (filePath) paths.push(filePath);
+  }
+  return paths;
+}
+
+function endFileDragCatch(reason, e) {
+  if (!fileDragCatchActive) return;
+  if (e) preventFileDragDefault(e);
+  fileDragCatchActive = false;
+  window.hitAPI.endFileDragCatch(reason);
+  if (reason === "drop" && typeof window.hitAPI.dropFiles === "function") {
+    const paths = getDroppedFilePaths(e);
+    if (paths.length) window.hitAPI.dropFiles({ paths });
+  }
+}
+
 // --- Pointer handlers ---
 area.addEventListener("pointerenter", () => setHoverInside(true));
 area.addEventListener("pointerleave", () => setHoverInside(false));
+area.addEventListener("dragenter", (e) => handleFileDragStartOrUpdate(e, "start"));
+area.addEventListener("dragover", (e) => handleFileDragStartOrUpdate(e, "update"));
+area.addEventListener("dragleave", (e) => endFileDragCatch("leave", e));
+area.addEventListener("drop", (e) => endFileDragCatch("drop", e));
 
 area.addEventListener("pointerdown", (e) => {
   if (e.button === 0) {
@@ -213,6 +298,9 @@ function handleClick(clientX) {
       clickCount = 0;
       const dir = firstClickDir;
       firstClickDir = null;
+      if (petClickActionEnabled && typeof window.hitAPI.launchClickAction === "function") {
+        window.hitAPI.launchClickAction();
+      }
       if (!canPlayReactionNow()) return;
       if (annoyedReact && Math.random() < 0.5) {
         playReaction(annoyedReact.file, annoyedReact.duration || 3500);

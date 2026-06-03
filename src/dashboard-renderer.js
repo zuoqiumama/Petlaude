@@ -94,6 +94,17 @@ function formatCompactNumber(value) {
   return String(Math.round(n));
 }
 
+function niceTickStep(max) {
+  if (max <= 0) return 1;
+  const rough = max / 4;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rough)));
+  const residual = rough / magnitude;
+  if (residual <= 1.5) return magnitude;
+  if (residual <= 3) return 2 * magnitude;
+  if (residual <= 7) return 5 * magnitude;
+  return 10 * magnitude;
+}
+
 function formatUsageDuration(ms) {
   const minutes = Math.max(0, Math.round((Number.isFinite(ms) ? ms : 0) / 60000));
   if (minutes <= 0) return "0m";
@@ -221,7 +232,7 @@ function renderUsageChart(days) {
 
   const width = 620;
   const height = 210;
-  const pad = { left: 34, right: 22, top: 16, bottom: 30 };
+  const pad = { left: 50, right: 44, top: 16, bottom: 30 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
   const maxTokens = Math.max(1, ...safeDays.map((day) => Number(day.totals && day.totals.tokens) || 0));
@@ -236,10 +247,45 @@ function renderUsageChart(days) {
   const barW = Math.max(14, Math.min(34, step * 0.48));
   const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Trend" });
 
+  // --- x-axis ---
   svg.appendChild(svgEl("line", {
     x1: pad.left,
     y1: pad.top + plotH,
     x2: width - pad.right,
+    y2: pad.top + plotH,
+    class: "chart-axis",
+  }));
+
+  // --- left y-axis: token grid lines + labels ---
+  const tokenStep = niceTickStep(maxTokens);
+  for (let tick = 0; tick <= maxTokens + 1e-9; tick += tokenStep) {
+    const y = pad.top + plotH - (tick / maxTokens) * plotH;
+    svg.appendChild(svgEl("line", {
+      x1: pad.left,
+      y1: y,
+      x2: width - pad.right,
+      y2: y,
+      class: "chart-grid",
+    }));
+    const label = svgEl("text", { x: pad.left - 6, y: y + 4, class: "chart-y-label", "text-anchor": "end" });
+    label.textContent = formatCompactNumber(tick);
+    svg.appendChild(label);
+  }
+
+  // --- right y-axis: time labels ---
+  const timeStep = niceTickStep(maxTime);
+  for (let tick = 0; tick <= maxTime + 1e-9; tick += timeStep) {
+    const y = pad.top + plotH - (tick / maxTime) * plotH;
+    const label = svgEl("text", { x: width - pad.right + 6, y: y + 4, class: "chart-y-label chart-y-label-right", "text-anchor": "start" });
+    label.textContent = formatUsageDuration(tick);
+    svg.appendChild(label);
+  }
+
+  // --- left y-axis line ---
+  svg.appendChild(svgEl("line", {
+    x1: pad.left,
+    y1: pad.top,
+    x2: pad.left,
     y2: pad.top + plotH,
     class: "chart-axis",
   }));
@@ -275,30 +321,98 @@ function renderUsageChart(days) {
     svg.appendChild(text);
   });
 
+  // Monotone cubic interpolation (Fritsch-Carlson).
+  // Guarantees the curve stays within the data range — no overshoot below 0.
+  function smoothLinePath(pts) {
+    const n = pts.length;
+    if (n < 2) return "";
+    if (n === 2) {
+      return `M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)},${pts[1].y.toFixed(1)}`;
+    }
+
+    // Uniform x spacing
+    const dx = pts[1].x - pts[0].x;
+
+    // Secant slopes for each segment
+    const segSlopes = new Array(n - 1);
+    for (let i = 0; i < n - 1; i++) {
+      segSlopes[i] = dx > 0 ? (pts[i + 1].y - pts[i].y) / dx : 0;
+    }
+
+    // Tangents at each point (central-difference weighted harmonic mean)
+    const m = new Array(n);
+    m[0] = segSlopes[0];
+    m[n - 1] = segSlopes[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (segSlopes[i - 1] * segSlopes[i] <= 0) {
+        m[i] = 0; // sign change → flat
+      } else {
+        // Harmonic mean of the two adjacent secant slopes
+        m[i] = 2 / (1 / segSlopes[i - 1] + 1 / segSlopes[i]);
+      }
+    }
+
+    // Fritsch-Carlson monotonicity constraint
+    for (let i = 0; i < n - 1; i++) {
+      const dy = pts[i + 1].y - pts[i].y;
+      if (Math.abs(dy) < 1e-9) {
+        m[i] = 0;
+        m[i + 1] = 0;
+        continue;
+      }
+      const segM = dy / dx;
+      const alpha = m[i] / segM;
+      const beta = m[i + 1] / segM;
+      if (alpha < 0 || beta < 0) {
+        m[i] = 0;
+        m[i + 1] = 0;
+      }
+      const mag = alpha * alpha + beta * beta;
+      if (mag > 9) {
+        const tau = 3 / Math.sqrt(mag);
+        m[i] = tau * alpha * segM;
+        m[i + 1] = tau * beta * segM;
+      }
+    }
+
+    // Build cubic Bezier path
+    const d3 = dx / 3;
+    let d = `M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const cp1x = pts[i].x + d3;
+      const cp1y = pts[i].y + m[i] * d3;
+      const cp2x = pts[i + 1].x - d3;
+      const cp2y = pts[i + 1].y - m[i + 1] * d3;
+      d += ` C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
+    }
+    return d;
+  }
+
   function buildLine(field, className, fillClass) {
     const points = safeDays.map((day, dayIndex) => {
       const value = Number(day.totals && day.totals[field]) || 0;
       const x = pad.left + step * dayIndex + step / 2;
       const y = pad.top + plotH - value / maxTime * plotH;
-      return { x: x.toFixed(1), y: y.toFixed(1) };
+      return { x, y };
     });
-    const pointStr = points.map((p) => `${p.x},${p.y}`).join(" ");
-    // Gradient fill beneath the line
-    if (fillClass) {
-      const bottomY = pad.top + plotH;
-      const firstX = points.length ? points[0].x : pad.left;
-      const lastX = points.length ? points[points.length - 1].x : pad.left;
-      const areaPoints = `${firstX},${bottomY} ${pointStr} ${lastX},${bottomY}`;
-      svg.appendChild(svgEl("polygon", {
-        points: areaPoints,
-        class: fillClass,
-      }));
-    }
-    svg.appendChild(svgEl("polyline", {
-      points: pointStr,
+    if (points.length < 2) return;
+    const d = smoothLinePath(points);
+    svg.appendChild(svgEl("path", {
+      d,
       class: className,
       fill: "none",
     }));
+    // Gradient fill beneath the line
+    if (fillClass) {
+      const bottomY = pad.top + plotH;
+      const firstX = points[0].x;
+      const lastX = points[points.length - 1].x;
+      const areaD = `${d} L ${lastX.toFixed(1)},${bottomY} L ${firstX.toFixed(1)},${bottomY} Z`;
+      svg.appendChild(svgEl("path", {
+        d: areaD,
+        class: fillClass,
+      }));
+    }
   }
 
   buildLine("sessionMs", "chart-line session-line", "chart-fill-session");

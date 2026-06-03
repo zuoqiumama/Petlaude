@@ -368,6 +368,11 @@ function buildThemeJson(packageInfo, themeId) {
     },
     reactions: {
       drag: { file: "codex-pet-running-loop.svg" },
+      fileDropCatch: {
+        left: "codex-pet-running-left-loop.svg",
+        center: "codex-pet-waving-loop.svg",
+        right: "codex-pet-running-right-loop.svg",
+      },
       clickLeft: { file: "codex-pet-jumping-once.svg", duration: 840 },
       clickRight: { file: "codex-pet-jumping-once.svg", duration: 840 },
       double: { files: ["codex-pet-waving-once.svg"], duration: 700 },
