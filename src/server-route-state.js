@@ -121,7 +121,8 @@ function handleStatePost(req, res, options) {
       const preserveState = data.preserve_state === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
       const tokenUsage = normalizeTokenUsage(
-        data.token_usage || data.tokenUsage || data.usage || data.tokens || null
+        data.token_usage || data.tokenUsage || data.usage || data.tokens || null,
+        { agentId, source: agentId }
       );
       const usageEventId = typeof data.usage_event_id === "string" && data.usage_event_id.trim()
         ? data.usage_event_id.trim().slice(0, 240)

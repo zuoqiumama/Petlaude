@@ -317,9 +317,30 @@ const TOKEN_USAGE_FIELD_NAMES = [
   "prompt_tokens",
   "completion_tokens",
   "total_tokens",
+  "inputTokens",
+  "outputTokens",
+  "tokensIn",
+  "tokensOut",
+  "prompt_token_count",
+  "candidates_token_count",
+  "total_token_count",
+  "cached_input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cache_write_input_tokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "cacheCreationTokens",
+  "reasoning_output_tokens",
+  "reasoning_tokens",
+  "reasoningTokens",
+  "thoughts_tokens",
+  "thinking_tokens",
+  "thoughtsTokenCount",
   "promptTokenCount",
   "candidatesTokenCount",
   "totalTokenCount",
+  "totalTokens",
 ];
 
 function extractExplicitTokenUsage(payload) {
@@ -411,12 +432,14 @@ function buildStateBody(payload, resolve) {
   return body;
 }
 
-function requestCodexPermission(body, callback) {
-  postPermissionToRunningServer(
+function requestCodexPermission(body, callback, options = {}) {
+  const postPermission = options.postPermissionToRunningServer || postPermissionToRunningServer;
+  postPermission(
     JSON.stringify(body),
     {
       timeoutMs: getCodexPermissionTimeoutMs(),
       probeTimeoutMs: 100,
+      ...(options.requestOptions || {}),
     },
     (ok, _port, responseBody) => {
       callback(ok ? sanitizeCodexPermissionOutput(responseBody) : buildCodexNoDecisionOutput());
@@ -462,6 +485,7 @@ module.exports = {
   isCodexDesktopSession,
   normalizeCodexSessionId,
   readFirstSessionMeta,
+  requestCodexPermission,
   sanitizeCodexPermissionDecision,
   sanitizeCodexPermissionOutput,
 };

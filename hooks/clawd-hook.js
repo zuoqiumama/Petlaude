@@ -237,9 +237,30 @@ const TOKEN_USAGE_FIELD_NAMES = [
   "prompt_tokens",
   "completion_tokens",
   "total_tokens",
+  "inputTokens",
+  "outputTokens",
+  "tokensIn",
+  "tokensOut",
+  "prompt_token_count",
+  "candidates_token_count",
+  "total_token_count",
+  "cached_input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cache_write_input_tokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "cacheCreationTokens",
+  "reasoning_output_tokens",
+  "reasoning_tokens",
+  "reasoningTokens",
+  "thoughts_tokens",
+  "thinking_tokens",
+  "thoughtsTokenCount",
   "promptTokenCount",
   "candidatesTokenCount",
   "totalTokenCount",
+  "totalTokens",
 ];
 
 function extractExplicitTokenUsage(payload) {
@@ -271,9 +292,42 @@ function extractTokenUsageFromTranscriptEntries(entries) {
       if (!usage || typeof usage !== "object") continue;
       const input = Number.isFinite(usage.input_tokens) ? usage.input_tokens : null;
       const output = Number.isFinite(usage.output_tokens) ? usage.output_tokens : null;
-      if (input !== null || output !== null) {
-        return { input_tokens: input ?? 0, output_tokens: output ?? 0 };
+      const cached = Number.isFinite(usage.cache_read_input_tokens) ? usage.cache_read_input_tokens : null;
+      const cacheCreation = Number.isFinite(usage.cache_creation_input_tokens) ? usage.cache_creation_input_tokens : null;
+      if (input !== null || output !== null || cached !== null || cacheCreation !== null) {
+        const out = {
+          input_tokens: input ?? 0,
+          output_tokens: output ?? 0,
+        };
+        if (cached !== null) out.cached_input_tokens = cached;
+        if (cacheCreation !== null) out.cache_creation_input_tokens = cacheCreation;
+        return out;
       }
+    }
+  }
+  return null;
+}
+
+function extractModelFromTranscriptUsageEntries(entries) {
+  if (!entries || !entries.length) return null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.type !== "assistant" || entry.isApiErrorMessage) continue;
+    for (const src of [entry.message, entry]) {
+      if (!src || typeof src !== "object") continue;
+      const usage = src.usage;
+      if (!usage || typeof usage !== "object") continue;
+      const model = (
+        typeof src.model === "string" && src.model.trim()
+          ? src.model.trim()
+          : (
+              entry.message && typeof entry.message.model === "string" && entry.message.model.trim()
+                ? entry.message.model.trim()
+                : (typeof entry.model === "string" && entry.model.trim() ? entry.model.trim() : "")
+            )
+      );
+      if (model && model !== "<synthetic>") return model;
     }
   }
   return null;
@@ -321,6 +375,8 @@ function buildStateBody(event, payload, resolve) {
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
   body.agent_id = "claude-code";
   if (cwd) body.cwd = cwd;
+  if (typeof payload.model === "string" && payload.model) body.model = payload.model;
+  if (typeof payload.provider === "string" && payload.provider) body.provider = payload.provider;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
   const toolInputFingerprint = buildToolInputFingerprint(
@@ -332,6 +388,10 @@ function buildStateBody(event, payload, resolve) {
   // Read transcript tail once and reuse for both session title extraction and
   // API error detection (Stop only). Avoids two file reads per hook invocation.
   const transcriptEntries = readTranscriptTailEntries(payload.transcript_path);
+  if (!body.model) {
+    const transcriptModel = extractModelFromTranscriptUsageEntries(transcriptEntries);
+    if (transcriptModel) body.model = transcriptModel;
+  }
   const sessionTitle =
     normalizeTitle(payload.session_title) ||
     extractSessionTitleFromEntries(transcriptEntries);

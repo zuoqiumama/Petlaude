@@ -41,6 +41,7 @@ const AGENT_LABELS = {
 
 let snapshot = { sessions: [], groups: [], orderedIds: [] };
 let usageSnapshot = null;
+let usagePeriod = "today";
 let i18nPayload = { lang: "en", translations: {} };
 let activeEdit = null;
 
@@ -82,6 +83,16 @@ function agentFallback(agentId) {
   return label ? label.slice(0, 2).toUpperCase() : "?";
 }
 
+function sourceLabel(source) {
+  const value = String(source || "").toLowerCase();
+  if (value === "claude") return "Claude";
+  if (value === "codex") return "Codex";
+  if (value === "gemini") return "Gemini";
+  if (value === "qwen") return "Qwen";
+  if (value === "copilot") return "Copilot";
+  return agentLabel(source);
+}
+
 function trimFixed(value) {
   return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, "");
 }
@@ -113,14 +124,6 @@ function formatUsageDuration(ms) {
   if (hours > 0 && mins > 0) return `${hours}h ${mins}m`;
   if (hours > 0) return `${hours}h`;
   return `${mins}m`;
-}
-
-function formatTokenBreakdown(totals = {}) {
-  const tokens = Number(totals.tokens) || 0;
-  const input = Number(totals.input) || 0;
-  const output = Number(totals.output) || 0;
-  if (tokens > 0 && input + output === 0) return "-- in / -- out";
-  return `${formatCompactNumber(input)} in / ${formatCompactNumber(output)} out`;
 }
 
 const AGENT_COLORS = {
@@ -160,13 +163,287 @@ function createMetric(label, value, subtext) {
   return card;
 }
 
-function getTodayUsage() {
-  return usageSnapshot && usageSnapshot.today
-    ? usageSnapshot.today
-    : { totals: { tokens: 0, input: 0, output: 0, sessionMs: 0, activeMs: 0 }, agents: [] };
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    el.setAttribute(key, String(value));
+  }
+  return el;
 }
 
-function createAgentUsageList(today) {
+const USAGE_PERIODS = [
+  { key: "today", label: "Today", days: 1 },
+  { key: "7d", label: "7 days", days: 7 },
+  { key: "30d", label: "30 days", days: 30 },
+  { key: "all", label: "Total", days: null },
+];
+
+const USAGE_TOTAL_FIELDS = [
+  "tokens",
+  "billableTokens",
+  "input",
+  "output",
+  "cachedInput",
+  "cacheCreationInput",
+  "reasoningOutput",
+  "unattributed",
+  "costUsd",
+  "pricedTokens",
+  "unpricedTokens",
+  "tokenEvents",
+  "sessionMs",
+  "activeMs",
+  "conversationCount",
+];
+
+function emptyUsageTotals() {
+  const out = {};
+  USAGE_TOTAL_FIELDS.forEach((field) => { out[field] = 0; });
+  return out;
+}
+
+function emptyUsageDay(day = "") {
+  return { day, totals: emptyUsageTotals(), agents: [], sources: [], models: [], projects: [] };
+}
+
+function addUsageTotals(target, source = {}) {
+  USAGE_TOTAL_FIELDS.forEach((field) => {
+    target[field] = (Number(target[field]) || 0) + (Number(source[field]) || 0);
+  });
+}
+
+function mergeUsageRows(map, rows, keyFor, defaultsFor) {
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const key = keyFor(row);
+    if (!key) return;
+    if (!map.has(key)) map.set(key, { ...defaultsFor(row), ...emptyUsageTotals() });
+    addUsageTotals(map.get(key), row);
+  });
+}
+
+function sortUsageRows(a, b) {
+  return (Number(b.tokens) || 0) - (Number(a.tokens) || 0) ||
+    (Number(b.costUsd) || 0) - (Number(a.costUsd) || 0) ||
+    String(a.agentId || a.source || a.model || a.projectRef || a.name || "")
+      .localeCompare(String(b.agentId || b.source || b.model || b.projectRef || b.name || ""));
+}
+
+function aggregateUsageDays(days) {
+  const safeDays = Array.isArray(days) ? days : [];
+  const out = emptyUsageDay(safeDays.length ? safeDays[safeDays.length - 1].day : "");
+  const agentMap = new Map();
+  const sourceMap = new Map();
+  const modelMap = new Map();
+  const projectMap = new Map();
+  safeDays.forEach((day) => {
+    addUsageTotals(out.totals, day && day.totals);
+    mergeUsageRows(
+      agentMap,
+      day && day.agents,
+      (row) => row.agentId || "unknown",
+      (row) => ({ agentId: row.agentId || "unknown" })
+    );
+    mergeUsageRows(
+      sourceMap,
+      day && day.sources,
+      (row) => row.source || "unknown",
+      (row) => ({ source: row.source || "unknown" })
+    );
+    mergeUsageRows(
+      modelMap,
+      day && day.models,
+      (row) => `${row.source || "unknown"}|${row.model || "unknown"}`,
+      (row) => ({ source: row.source || "unknown", model: row.model || "unknown" })
+    );
+    mergeUsageRows(
+      projectMap,
+      day && day.projects,
+      (row) => row.projectRef || row.name || "unknown",
+      (row) => ({ projectRef: row.projectRef || "unknown", name: row.name || "Unknown" })
+    );
+  });
+  out.agents = Array.from(agentMap.values()).sort(sortUsageRows);
+  out.sources = Array.from(sourceMap.values()).sort(sortUsageRows);
+  out.models = Array.from(modelMap.values()).sort(sortUsageRows);
+  out.projects = Array.from(projectMap.values()).sort(sortUsageRows);
+  return out;
+}
+
+function usagePeriodConfig() {
+  return USAGE_PERIODS.find((period) => period.key === usagePeriod) || USAGE_PERIODS[0];
+}
+
+function usageDaysForCurrentPeriod() {
+  const days = Array.isArray(usageSnapshot && usageSnapshot.days) ? usageSnapshot.days : [];
+  const config = usagePeriodConfig();
+  if (config.key === "today") {
+    return usageSnapshot && usageSnapshot.today ? [usageSnapshot.today] : [emptyUsageDay()];
+  }
+  if (!config.days) return days;
+  return days.slice(-config.days);
+}
+
+function getUsageView() {
+  const config = usagePeriodConfig();
+  const days = usageDaysForCurrentPeriod();
+  const usage = config.key === "today"
+    ? (usageSnapshot && usageSnapshot.today ? usageSnapshot.today : emptyUsageDay())
+    : aggregateUsageDays(days);
+  return { config, days, usage };
+}
+
+function formatCost(value) {
+  const n = Number(value) || 0;
+  if (n <= 0) return "$0";
+  if (n < 0.01) return "<$0.01";
+  if (n < 10) return `$${n.toFixed(2)}`;
+  if (n < 1000) return `$${n.toFixed(1)}`;
+  return `$${formatCompactNumber(n)}`;
+}
+
+function formatCostAxis(value) {
+  const n = Number(value) || 0;
+  if (n <= 0) return "$0";
+  if (n < 0.01) {
+    return `$${n.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`;
+  }
+  return formatCost(n);
+}
+
+function formatUsageTokenTypes(totals = {}) {
+  const parts = [
+    `${formatCompactNumber(Number(totals.input) || 0)} in`,
+    `${formatCompactNumber(Number(totals.cachedInput) || 0)} cache`,
+    `${formatCompactNumber(Number(totals.output) || 0)} out`,
+  ];
+  const cacheCreation = Number(totals.cacheCreationInput) || 0;
+  if (cacheCreation > 0) parts.splice(2, 0, `${formatCompactNumber(cacheCreation)} write`);
+  const reasoning = Number(totals.reasoningOutput) || 0;
+  if (reasoning > 0) parts.push(`${formatCompactNumber(reasoning)} reasoning`);
+  const unattributed = Number(totals.unattributed) || 0;
+  if (unattributed > 0) parts.push(`${formatCompactNumber(unattributed)} unknown`);
+  return parts.join(" / ");
+}
+
+function createPeriodTabs() {
+  const tabs = document.createElement("div");
+  tabs.className = "usage-period-tabs";
+  tabs.setAttribute("role", "tablist");
+  USAGE_PERIODS.forEach((period) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `usage-period-button${usagePeriod === period.key ? " active" : ""}`;
+    button.textContent = period.label;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", usagePeriod === period.key ? "true" : "false");
+    button.addEventListener("click", () => {
+      usagePeriod = period.key;
+      render({ force: true });
+    });
+    tabs.appendChild(button);
+  });
+  return tabs;
+}
+
+function metricTokens(totals = {}) {
+  return Number(totals.tokens) || Number(totals.total_tokens) || 0;
+}
+
+function metricCost(totals = {}) {
+  return Number(totals.costUsd) || Number(totals.total_cost_usd) || 0;
+}
+
+function metricConversations(totals = {}) {
+  return Number(totals.conversationCount) || Number(totals.conversation_count) || 0;
+}
+
+function createMiniStat(label, value, subtext) {
+  const item = document.createElement("div");
+  item.className = "usage-mini-stat";
+  item.appendChild(createText("span", "usage-label", label));
+  item.appendChild(createText("strong", "usage-mini-value", value));
+  if (subtext) item.appendChild(createText("span", "usage-subtext", subtext));
+  return item;
+}
+
+function createStatsPanel(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-stats-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", "Stats"));
+  const grid = document.createElement("div");
+  grid.className = "usage-mini-grid";
+  const rolling = usageSnapshot && usageSnapshot.rolling ? usageSnapshot.rolling : {};
+  const last7 = rolling.last7d || { totals: emptyUsageTotals(), activeDays: 0 };
+  const last30 = rolling.last30d || { totals: emptyUsageTotals(), activeDays: 0 };
+  const topModel = Array.isArray(usage.models) && usage.models.length ? usage.models[0] : null;
+  grid.appendChild(createMiniStat("7 days", formatCompactNumber(metricTokens(last7.totals)), `${last7.activeDays || 0} active days`));
+  grid.appendChild(createMiniStat("30 days", formatCompactNumber(metricTokens(last30.totals)), `${last30.activeDays || 0} active days`));
+  grid.appendChild(createMiniStat("Avg active day", formatCompactNumber(last30.avgTokensPerActiveDay || 0), "last 30 days"));
+  grid.appendChild(createMiniStat("Conversations", formatCompactNumber(metricConversations(usage.totals)), usagePeriodConfig().label));
+  grid.appendChild(createMiniStat(
+    "Top model",
+    topModel ? formatCompactNumber(topModel.tokens) : "0",
+    topModel ? `${topModel.model} · ${sourceLabel(topModel.source)}` : "no model usage"
+  ));
+  panel.appendChild(grid);
+  return panel;
+}
+
+function createProviderOverview(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-provider-overview";
+  panel.appendChild(createText("h3", "usage-panel-title", "Usage Overview"));
+  const sources = Array.isArray(usage.sources) ? usage.sources : [];
+  if (!sources.length) {
+    panel.appendChild(createText("div", "usage-empty", "No provider usage yet"));
+    return panel;
+  }
+
+  const totalTokens = Math.max(1, metricTokens(usage.totals));
+  const bar = document.createElement("div");
+  bar.className = "usage-provider-bar";
+  sources.slice(0, 8).forEach((source, index) => {
+    const segment = document.createElement("span");
+    segment.style.width = `${Math.max(1, metricTokens(source) / totalTokens * 100)}%`;
+    segment.style.background = agentColor(source.source, index);
+    segment.title = `${sourceLabel(source.source)}: ${formatCompactNumber(metricTokens(source))}`;
+    bar.appendChild(segment);
+  });
+  panel.appendChild(bar);
+
+  const cards = document.createElement("div");
+  cards.className = "usage-provider-cards";
+  sources.slice(0, 6).forEach((source, index) => {
+    const card = document.createElement("div");
+    card.className = "usage-provider-card";
+    const head = document.createElement("div");
+    head.className = "usage-provider-head";
+    const swatch = document.createElement("span");
+    swatch.className = "usage-swatch";
+    swatch.style.background = agentColor(source.source, index);
+    head.appendChild(swatch);
+    head.appendChild(createText("span", "usage-provider-name", sourceLabel(source.source)));
+    head.appendChild(createText("span", "usage-provider-share", `${Math.round(metricTokens(source) / totalTokens * 100)}%`));
+    card.appendChild(head);
+    card.appendChild(createText("div", "usage-provider-tokens", formatCompactNumber(metricTokens(source))));
+    card.appendChild(createText("div", "usage-subtext", `${formatCost(metricCost(source))} · ${metricConversations(source)} conversations`));
+    const sourceModels = (Array.isArray(usage.models) ? usage.models : [])
+      .filter((model) => model.source === source.source)
+      .slice(0, 3);
+    sourceModels.forEach((model) => {
+      const modelRow = document.createElement("div");
+      modelRow.className = "usage-provider-model";
+      modelRow.appendChild(createText("span", "", model.model || "unknown"));
+      modelRow.appendChild(createText("span", "muted", formatCompactNumber(model.tokens)));
+      card.appendChild(modelRow);
+    });
+    cards.appendChild(card);
+  });
+  panel.appendChild(cards);
+  return panel;
+}
+
+function createAgentUsageList(usage) {
   const list = document.createElement("div");
   list.className = "usage-agent-list";
   const header = document.createElement("div");
@@ -174,11 +451,11 @@ function createAgentUsageList(today) {
   header.appendChild(createText("span", "", ""));
   header.appendChild(createText("span", "usage-agent-name", "Agent"));
   header.appendChild(createText("span", "usage-agent-value muted", "Tokens"));
-  header.appendChild(createText("span", "usage-agent-value muted", "Session"));
+  header.appendChild(createText("span", "usage-agent-value muted", "Cost"));
   header.appendChild(createText("span", "usage-agent-value muted", "Active"));
   list.appendChild(header);
 
-  const agents = Array.isArray(today.agents) ? today.agents : [];
+  const agents = Array.isArray(usage.agents) ? usage.agents : [];
   if (!agents.length) {
     list.appendChild(createText("div", "usage-empty", "No usage yet"));
     return list;
@@ -191,63 +468,85 @@ function createAgentUsageList(today) {
     swatch.className = "usage-swatch";
     swatch.style.background = agentColor(agent.agentId, index);
     row.appendChild(swatch);
-
-    const name = createText("span", "usage-agent-name", agentLabel(agent.agentId));
-    row.appendChild(name);
-
+    row.appendChild(createText("span", "usage-agent-name", agentLabel(agent.agentId)));
     row.appendChild(createText("span", "usage-agent-value", formatCompactNumber(agent.tokens)));
-    row.appendChild(createText("span", "usage-agent-value muted", formatUsageDuration(agent.sessionMs)));
+    row.appendChild(createText("span", "usage-agent-value muted", formatCost(agent.costUsd)));
     row.appendChild(createText("span", "usage-agent-value muted", formatUsageDuration(agent.activeMs)));
     list.appendChild(row);
   });
   return list;
 }
 
-function svgEl(tag, attrs = {}) {
-  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [key, value] of Object.entries(attrs)) {
-    el.setAttribute(key, String(value));
-  }
-  return el;
+function trendRowsForView(config, days) {
+  const trends = usageSnapshot && usageSnapshot.trends ? usageSnapshot.trends : {};
+  if (config.key === "today" && Array.isArray(trends.hourly)) return trends.hourly;
+  if (config.key === "all" && Array.isArray(trends.monthly) && trends.monthly.length) return trends.monthly;
+  return Array.isArray(days) ? days : [];
 }
 
-function collectChartAgents(days) {
-  const ids = new Set();
-  for (const day of days) {
-    for (const agent of (Array.isArray(day.agents) ? day.agents : [])) {
-      if (agent.tokens > 0) ids.add(agent.agentId || "unknown");
+function trendLabel(row) {
+  if (row && row.bucket) {
+    const d = new Date(row.bucket);
+    if (!Number.isNaN(d.getTime())) {
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     }
   }
-  return Array.from(ids);
+  if (row && row.month) return row.month;
+  return String(row && row.day || "").slice(5).replace("-", "/");
 }
 
-function renderUsageChart(days) {
+function modelSegmentCatalog(rows) {
+  const totals = new Map();
+  (rows || []).forEach((row) => {
+    (Array.isArray(row.models) ? row.models : []).forEach((model) => {
+      const key = `${model.source || "unknown"}|${model.model || "unknown"}`;
+      if (!totals.has(key)) {
+        totals.set(key, {
+          key,
+          source: model.source || "unknown",
+          model: model.model || "unknown",
+          tokens: 0,
+        });
+      }
+      totals.get(key).tokens += metricTokens(model);
+    });
+  });
+  return Array.from(totals.values())
+    .filter((model) => model.tokens > 0)
+    .sort((a, b) => b.tokens - a.tokens)
+    .slice(0, 6);
+}
+
+function segmentValueForRow(row, segment) {
+  if (segment.kind === "model") {
+    const models = Array.isArray(row.models) ? row.models : [];
+    const found = models.find((model) => `${model.source || "unknown"}|${model.model || "unknown"}` === segment.key);
+    return found ? metricTokens(found) : 0;
+  }
+  return Number(row.totals && row.totals[segment.key]) || 0;
+}
+
+function renderUsageChart(rows, config = usagePeriodConfig()) {
   const chart = document.createElement("div");
   chart.className = "usage-chart";
-  const safeDays = Array.isArray(days) && days.length ? days : [];
-  if (!safeDays.length) {
+  const safeRows = Array.isArray(rows) && rows.length ? rows : [];
+  if (!safeRows.length) {
     chart.appendChild(createText("div", "usage-empty", "No trend yet"));
     return chart;
   }
 
   const width = 620;
   const height = 210;
-  const pad = { left: 50, right: 44, top: 16, bottom: 30 };
+  const pad = { left: 50, right: 48, top: 16, bottom: 30 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
-  const maxTokens = Math.max(1, ...safeDays.map((day) => Number(day.totals && day.totals.tokens) || 0));
-  const maxTime = Math.max(1, ...safeDays.map((day) =>
-    Math.max(
-      Number(day.totals && day.totals.sessionMs) || 0,
-      Number(day.totals && day.totals.activeMs) || 0
-    )
-  ));
-  const agents = collectChartAgents(safeDays);
-  const step = plotW / safeDays.length;
-  const barW = Math.max(14, Math.min(34, step * 0.48));
-  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Trend" });
+  const maxTokens = Math.max(1, ...safeRows.map((row) => metricTokens(row.totals)));
+  const maxCost = Math.max(0, ...safeRows.map((row) => metricCost(row.totals)));
+  const costScaleMax = maxCost > 0 ? maxCost : 1;
+  const step = plotW / safeRows.length;
+  const barW = Math.max(5, Math.min(26, step * 0.58));
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Trend Monitor" });
 
-  // --- x-axis ---
   svg.appendChild(svgEl("line", {
     x1: pad.left,
     y1: pad.top + plotH,
@@ -256,7 +555,6 @@ function renderUsageChart(days) {
     class: "chart-axis",
   }));
 
-  // --- left y-axis: token grid lines + labels ---
   const tokenStep = niceTickStep(maxTokens);
   for (let tick = 0; tick <= maxTokens + 1e-9; tick += tokenStep) {
     const y = pad.top + plotH - (tick / maxTokens) * plotH;
@@ -272,16 +570,16 @@ function renderUsageChart(days) {
     svg.appendChild(label);
   }
 
-  // --- right y-axis: time labels ---
-  const timeStep = niceTickStep(maxTime);
-  for (let tick = 0; tick <= maxTime + 1e-9; tick += timeStep) {
-    const y = pad.top + plotH - (tick / maxTime) * plotH;
-    const label = svgEl("text", { x: width - pad.right + 6, y: y + 4, class: "chart-y-label chart-y-label-right", "text-anchor": "start" });
-    label.textContent = formatUsageDuration(tick);
-    svg.appendChild(label);
+  if (maxCost > 0) {
+    const costStep = niceTickStep(maxCost);
+    for (let tick = 0; tick <= maxCost + 1e-9; tick += costStep) {
+      const y = pad.top + plotH - (tick / costScaleMax) * plotH;
+      const label = svgEl("text", { x: width - pad.right + 6, y: y + 4, class: "chart-y-label chart-y-label-right", "text-anchor": "start" });
+      label.textContent = formatCostAxis(tick);
+      svg.appendChild(label);
+    }
   }
 
-  // --- left y-axis line ---
   svg.appendChild(svgEl("line", {
     x1: pad.left,
     y1: pad.top,
@@ -290,12 +588,27 @@ function renderUsageChart(days) {
     class: "chart-axis",
   }));
 
-  safeDays.forEach((day, dayIndex) => {
-    const x = pad.left + step * dayIndex + step / 2 - barW / 2;
+  const tokenSegments = [
+    { key: "input", label: "Input", color: "#38bdf8" },
+    { key: "cachedInput", label: "Cache read", color: "#14b8a6" },
+    { key: "cacheCreationInput", label: "Cache write", color: "#f59e0b" },
+    { key: "output", label: "Output", color: "#a78bfa" },
+    { key: "reasoningOutput", label: "Reasoning", color: "#fb7185" },
+    { key: "unattributed", label: "Unknown", color: "#94a3b8" },
+  ];
+  const modelSegments = modelSegmentCatalog(safeRows).map((model, index) => ({
+    kind: "model",
+    key: model.key,
+    label: model.model,
+    color: agentColor(model.source, index),
+  }));
+  const segments = modelSegments.length ? modelSegments : tokenSegments.map((segment) => ({ ...segment, kind: "token" }));
+
+  safeRows.forEach((row, rowIndex) => {
+    const x = pad.left + step * rowIndex + step / 2 - barW / 2;
     let yCursor = pad.top + plotH;
-    agents.forEach((agentId, agentIndex) => {
-      const agent = (day.agents || []).find((entry) => (entry.agentId || "unknown") === agentId);
-      const tokens = agent ? Number(agent.tokens) || 0 : 0;
+    segments.forEach((segment) => {
+      const tokens = segmentValueForRow(row, segment);
       if (tokens <= 0) return;
       const segmentH = Math.max(1, tokens / maxTokens * plotH);
       yCursor -= segmentH;
@@ -305,173 +618,344 @@ function renderUsageChart(days) {
         width: barW,
         height: segmentH,
         rx: 3,
-        fill: agentColor(agentId, agentIndex),
+        fill: segment.color,
         opacity: 0.92,
       }));
     });
 
-    const label = String(day.day || "").slice(5).replace("-", "/");
+    const label = trendLabel(row);
     const text = svgEl("text", {
-      x: pad.left + step * dayIndex + step / 2,
+      x: pad.left + step * rowIndex + step / 2,
       y: height - 9,
       class: "chart-day",
       "text-anchor": "middle",
     });
-    text.textContent = label;
-    svg.appendChild(text);
+    const every = config.key === "today" ? 6 : Math.ceil(safeRows.length / 12);
+    if (rowIndex % Math.max(1, every) === 0 || rowIndex === safeRows.length - 1) {
+      text.textContent = label;
+      svg.appendChild(text);
+    }
   });
 
-  // Monotone cubic interpolation (Fritsch-Carlson).
-  // Guarantees the curve stays within the data range — no overshoot below 0.
-  function smoothLinePath(pts) {
-    const n = pts.length;
-    if (n < 2) return "";
-    if (n === 2) {
-      return `M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)},${pts[1].y.toFixed(1)}`;
-    }
-
-    // Uniform x spacing
-    const dx = pts[1].x - pts[0].x;
-
-    // Secant slopes for each segment
-    const segSlopes = new Array(n - 1);
-    for (let i = 0; i < n - 1; i++) {
-      segSlopes[i] = dx > 0 ? (pts[i + 1].y - pts[i].y) / dx : 0;
-    }
-
-    // Tangents at each point (central-difference weighted harmonic mean)
-    const m = new Array(n);
-    m[0] = segSlopes[0];
-    m[n - 1] = segSlopes[n - 2];
-    for (let i = 1; i < n - 1; i++) {
-      if (segSlopes[i - 1] * segSlopes[i] <= 0) {
-        m[i] = 0; // sign change → flat
-      } else {
-        // Harmonic mean of the two adjacent secant slopes
-        m[i] = 2 / (1 / segSlopes[i - 1] + 1 / segSlopes[i]);
-      }
-    }
-
-    // Fritsch-Carlson monotonicity constraint
-    for (let i = 0; i < n - 1; i++) {
-      const dy = pts[i + 1].y - pts[i].y;
-      if (Math.abs(dy) < 1e-9) {
-        m[i] = 0;
-        m[i + 1] = 0;
-        continue;
-      }
-      const segM = dy / dx;
-      const alpha = m[i] / segM;
-      const beta = m[i + 1] / segM;
-      if (alpha < 0 || beta < 0) {
-        m[i] = 0;
-        m[i + 1] = 0;
-      }
-      const mag = alpha * alpha + beta * beta;
-      if (mag > 9) {
-        const tau = 3 / Math.sqrt(mag);
-        m[i] = tau * alpha * segM;
-        m[i + 1] = tau * beta * segM;
-      }
-    }
-
-    // Build cubic Bezier path
-    const d3 = dx / 3;
-    let d = `M ${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
-    for (let i = 0; i < n - 1; i++) {
-      const cp1x = pts[i].x + d3;
-      const cp1y = pts[i].y + m[i] * d3;
-      const cp2x = pts[i + 1].x - d3;
-      const cp2y = pts[i + 1].y - m[i + 1] * d3;
-      d += ` C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
-    }
-    return d;
+  const costPoints = safeRows.map((row, rowIndex) => {
+    const value = metricCost(row.totals);
+    return {
+      x: pad.left + step * rowIndex + step / 2,
+      y: pad.top + plotH - value / costScaleMax * plotH,
+    };
+  });
+  if (maxCost > 0 && costPoints.length > 1) {
+    const d = costPoints.map((pt, index) =>
+      `${index === 0 ? "M" : "L"} ${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
+    ).join(" ");
+    svg.appendChild(svgEl("path", { d, class: "chart-line cost-line", fill: "none" }));
   }
 
-  function buildLine(field, className, fillClass) {
-    const points = safeDays.map((day, dayIndex) => {
-      const value = Number(day.totals && day.totals[field]) || 0;
-      const x = pad.left + step * dayIndex + step / 2;
-      const y = pad.top + plotH - value / maxTime * plotH;
-      return { x, y };
-    });
-    if (points.length < 2) return;
-    const d = smoothLinePath(points);
-    svg.appendChild(svgEl("path", {
-      d,
-      class: className,
-      fill: "none",
-    }));
-    // Gradient fill beneath the line
-    if (fillClass) {
-      const bottomY = pad.top + plotH;
-      const firstX = points[0].x;
-      const lastX = points[points.length - 1].x;
-      const areaD = `${d} L ${lastX.toFixed(1)},${bottomY} L ${firstX.toFixed(1)},${bottomY} Z`;
-      svg.appendChild(svgEl("path", {
-        d: areaD,
-        class: fillClass,
-      }));
-    }
-  }
-
-  buildLine("sessionMs", "chart-line session-line", "chart-fill-session");
-  buildLine("activeMs", "chart-line active-line", "chart-fill-active");
   chart.appendChild(svg);
 
   const legend = document.createElement("div");
   legend.className = "usage-legend";
-  agents.slice(0, 8).forEach((agentId, index) => {
+  segments.forEach((segment) => {
     const item = document.createElement("span");
     item.className = "legend-item";
     const swatch = document.createElement("span");
     swatch.className = "legend-swatch";
-    swatch.style.background = agentColor(agentId, index);
+    swatch.style.background = segment.color;
     item.appendChild(swatch);
-    item.appendChild(document.createTextNode(agentLabel(agentId)));
+    item.appendChild(document.createTextNode(segment.label));
     legend.appendChild(item);
   });
-  for (const [label, className] of [["Session", "legend-line session-line"], ["Active", "legend-line active-line"]]) {
-    const item = document.createElement("span");
-    item.className = "legend-item";
-    item.appendChild(createText("span", className, ""));
-    item.appendChild(document.createTextNode(label));
-    legend.appendChild(item);
+  if (maxCost > 0) {
+    const costItem = document.createElement("span");
+    costItem.className = "legend-item";
+    costItem.appendChild(createText("span", "legend-line cost-line", ""));
+    costItem.appendChild(document.createTextNode("Cost"));
+    legend.appendChild(costItem);
   }
   chart.appendChild(legend);
   return chart;
 }
 
+function createModelBreakdown(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-model-list";
+  const models = Array.isArray(usage.models) ? usage.models : [];
+  const maxTokens = Math.max(1, ...models.map((model) => Number(model.tokens) || 0));
+  if (!models.length) {
+    panel.appendChild(createText("div", "usage-empty", "No model usage yet"));
+    return panel;
+  }
+  models.slice(0, 10).forEach((model, index) => {
+    const row = document.createElement("div");
+    row.className = "usage-model-row";
+    const main = document.createElement("div");
+    main.className = "usage-model-main";
+    main.appendChild(createText("span", "usage-model-name", model.model || "unknown"));
+    main.appendChild(createText("span", "usage-model-source", model.source || "unknown"));
+    const bar = document.createElement("span");
+    bar.className = "usage-model-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(2, (Number(model.tokens) || 0) / maxTokens * 100)}%`;
+    fill.style.background = agentColor(model.source, index);
+    bar.appendChild(fill);
+    main.appendChild(bar);
+    row.appendChild(main);
+    const stats = document.createElement("div");
+    stats.className = "usage-model-stats";
+    stats.appendChild(createText("span", "", formatCompactNumber(model.tokens)));
+    stats.appendChild(createText("span", "muted", formatCost(model.costUsd)));
+    row.appendChild(stats);
+    panel.appendChild(row);
+  });
+  return panel;
+}
+
+function createProjectUsagePanel(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-project-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", "Project Usage"));
+  const projects = Array.isArray(usage.projects) ? usage.projects : [];
+  if (!projects.length) {
+    panel.appendChild(createText("div", "usage-empty", "No project attribution yet"));
+    return panel;
+  }
+  const maxTokens = Math.max(1, ...projects.map((project) => metricTokens(project)));
+  const list = document.createElement("div");
+  list.className = "usage-project-list";
+  projects.slice(0, 8).forEach((project, index) => {
+    const row = document.createElement("div");
+    row.className = "usage-project-row";
+    const main = document.createElement("div");
+    main.className = "usage-project-main";
+    main.appendChild(createText("span", "usage-project-name", project.name || "Unknown"));
+    const ref = project.projectRef && project.projectRef !== "unknown" ? project.projectRef : "";
+    main.appendChild(createText("span", "usage-project-ref", ref));
+    const bar = document.createElement("span");
+    bar.className = "usage-model-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(2, metricTokens(project) / maxTokens * 100)}%`;
+    fill.style.background = FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+    bar.appendChild(fill);
+    main.appendChild(bar);
+    row.appendChild(main);
+    const stats = document.createElement("div");
+    stats.className = "usage-model-stats";
+    stats.appendChild(createText("span", "", formatCompactNumber(metricTokens(project))));
+    stats.appendChild(createText("span", "muted", formatCost(metricCost(project))));
+    row.appendChild(stats);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
+function createCostAnalysisPanel(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-cost-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", "Cost Analysis"));
+  const rows = (Array.isArray(usage.models) ? usage.models.slice(0, 12).map((model) => ({
+    label: model.model && model.model !== "unknown" ? model.model : "Unknown model",
+    detail: sourceLabel(model.source),
+    tokens: metricTokens(model),
+    cost: metricCost(model),
+    unpriced: Number(model.unpricedTokens) || 0,
+  })) : []).filter((row) => row.tokens > 0 || row.cost > 0);
+  if (!rows.length) {
+    panel.appendChild(createText("div", "usage-empty", "No model usage yet"));
+    return panel;
+  }
+  const table = document.createElement("div");
+  table.className = "usage-cost-table";
+  const header = document.createElement("div");
+  header.className = "usage-cost-row usage-cost-head";
+  header.appendChild(createText("span", "", "Model"));
+  header.appendChild(createText("span", "", "Tokens"));
+  header.appendChild(createText("span", "", "Cost"));
+  table.appendChild(header);
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "usage-cost-row";
+    const name = document.createElement("span");
+    name.className = "usage-cost-name";
+    name.appendChild(createText("strong", "", row.label));
+    name.appendChild(createText("small", "", row.unpriced > 0 ? `${row.detail} · ${formatCompactNumber(row.unpriced)} unpriced` : row.detail));
+    item.appendChild(name);
+    item.appendChild(createText("span", "usage-agent-value", formatCompactNumber(row.tokens)));
+    item.appendChild(createText("span", "usage-agent-value", formatCost(row.cost)));
+    table.appendChild(item);
+  });
+  panel.appendChild(table);
+  return panel;
+}
+
+function contextRowsFromUsage(usage) {
+  const totals = usage.totals || {};
+  return [
+    { label: "Messages / input", value: Number(totals.input) || 0, color: "#38bdf8" },
+    { label: "Cached input", value: Number(totals.cachedInput) || 0, color: "#14b8a6" },
+    { label: "Cache creation", value: Number(totals.cacheCreationInput) || 0, color: "#f59e0b" },
+    { label: "Output", value: Number(totals.output) || 0, color: "#a78bfa" },
+    { label: "Reasoning output", value: Number(totals.reasoningOutput) || 0, color: "#fb7185" },
+    { label: "Unattributed", value: Number(totals.unattributed) || 0, color: "#94a3b8" },
+  ];
+}
+
+function createContextBreakdownPanel(usage) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-context-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", "Context Breakdown"));
+  const rows = contextRowsFromUsage(usage);
+  const maxTokens = Math.max(1, ...rows.map((row) => row.value));
+  const list = document.createElement("div");
+  list.className = "usage-context-list";
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = "usage-context-row";
+    item.appendChild(createText("span", "usage-context-label", row.label));
+    const bar = document.createElement("span");
+    bar.className = "usage-context-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${row.value <= 0 ? 0 : Math.max(2, row.value / maxTokens * 100)}%`;
+    fill.style.background = row.color;
+    bar.appendChild(fill);
+    item.appendChild(bar);
+    item.appendChild(createText("span", "usage-agent-value", formatCompactNumber(row.value)));
+    list.appendChild(item);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
+function createUsageDetailsPanel(days) {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-details-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", "Data Details"));
+  const safeDays = (Array.isArray(days) ? days : []).filter((day) => metricTokens(day && day.totals) > 0);
+  if (!safeDays.length) {
+    panel.appendChild(createText("div", "usage-empty", "No daily usage details yet"));
+    return panel;
+  }
+  const table = document.createElement("div");
+  table.className = "usage-detail-table";
+  const header = document.createElement("div");
+  header.className = "usage-detail-row usage-cost-head";
+  header.appendChild(createText("span", "", "Date"));
+  header.appendChild(createText("span", "", "Top source"));
+  header.appendChild(createText("span", "", "Tokens"));
+  header.appendChild(createText("span", "", "Cost"));
+  table.appendChild(header);
+  safeDays.slice(-14).reverse().forEach((day) => {
+    const source = Array.isArray(day.sources) && day.sources.length ? sourceLabel(day.sources[0].source) : "Unknown";
+    const row = document.createElement("div");
+    row.className = "usage-detail-row";
+    row.appendChild(createText("span", "usage-detail-date", day.day || ""));
+    row.appendChild(createText("span", "usage-detail-source", source));
+    row.appendChild(createText("span", "usage-agent-value", formatCompactNumber(metricTokens(day.totals))));
+    row.appendChild(createText("span", "usage-agent-value", formatCost(metricCost(day.totals))));
+    table.appendChild(row);
+  });
+  panel.appendChild(table);
+  return panel;
+}
+
+function createActivityDepth(heatmap) {
+  const wrap = document.createElement("div");
+  wrap.className = "usage-depth";
+  wrap.appendChild(createText("div", "usage-depth-title", "Activity Depth"));
+  const chart = document.createElement("div");
+  chart.className = "usage-depth-chart";
+  const cells = Array.isArray(heatmap && heatmap.cells) ? heatmap.cells.filter((cell) => cell.inRange && !cell.future).slice(-56) : [];
+  const maxTokens = Math.max(1, ...cells.map((cell) => metricTokens(cell.totals)));
+  cells.forEach((cell) => {
+    const column = document.createElement("span");
+    column.style.height = `${Math.max(3, metricTokens(cell.totals) / maxTokens * 44)}px`;
+    column.className = `level-${cell.level || 0}`;
+    column.title = `${cell.day}: ${formatCompactNumber(metricTokens(cell.totals))} tokens`;
+    chart.appendChild(column);
+  });
+  wrap.appendChild(chart);
+  return wrap;
+}
+
+function createUsageHeatmap(source) {
+  const panel = document.createElement("div");
+  panel.className = "usage-heatmap";
+  const weeks = Array.isArray(source && source.weeks) ? source.weeks : [];
+  if (!weeks.length) return panel;
+  weeks.forEach((week) => {
+    const col = document.createElement("div");
+    col.className = "usage-heat-week";
+    week.forEach((cellData) => {
+      const value = metricTokens(cellData && cellData.totals);
+      const cell = document.createElement("span");
+      cell.className = `usage-heat-cell level-${cellData && cellData.level || 0}${cellData && cellData.future ? " future" : ""}`;
+      cell.title = `${cellData.day}: ${formatCompactNumber(value)} tokens, ${formatCost(metricCost(cellData && cellData.totals))}`;
+      col.appendChild(cell);
+    });
+    panel.appendChild(col);
+  });
+  return panel;
+}
+
 function createUsageSection() {
-  const today = getTodayUsage();
-  const totals = today.totals || {};
+  const { config, days, usage } = getUsageView();
+  const totals = usage.totals || {};
   const section = document.createElement("section");
   section.className = "usage-section";
 
   const header = document.createElement("div");
   header.className = "usage-header";
   header.appendChild(createText("h2", "usage-title", "Usage"));
-  header.appendChild(createText("span", "usage-range", "Today"));
+  header.appendChild(createPeriodTabs());
   section.appendChild(header);
 
   const summary = document.createElement("div");
   summary.className = "usage-summary";
-  summary.appendChild(createMetric("Tokens", formatCompactNumber(totals.tokens), formatTokenBreakdown(totals)));
-  summary.appendChild(createMetric("Session", formatUsageDuration(totals.sessionMs), "wall clock"));
-  summary.appendChild(createMetric("Active", formatUsageDuration(totals.activeMs), "agent busy"));
+  summary.appendChild(createMetric("Tokens", formatCompactNumber(totals.tokens), formatUsageTokenTypes(totals)));
+  summary.appendChild(createMetric("Cost", formatCost(totals.costUsd), totals.unpricedTokens > 0 ? `${formatCompactNumber(totals.unpricedTokens)} unpriced` : "priced by model"));
+  summary.appendChild(createMetric("Active", formatUsageDuration(totals.activeMs), `${formatUsageDuration(totals.sessionMs)} session`));
+  summary.appendChild(createMetric("Conversations", formatCompactNumber(metricConversations(totals)), `${formatCompactNumber(totals.tokenEvents)} events`));
   section.appendChild(summary);
+
+  section.appendChild(createProviderOverview(usage));
+  section.appendChild(createStatsPanel(usage));
+
+  const chartPanel = document.createElement("div");
+  chartPanel.className = "usage-panel chart-panel";
+  chartPanel.appendChild(createText("h3", "usage-panel-title", "Trend Monitor"));
+  chartPanel.appendChild(renderUsageChart(trendRowsForView(config, days), config));
+  section.appendChild(chartPanel);
+
+  const heatPanel = document.createElement("div");
+  heatPanel.className = "usage-panel heatmap-panel";
+  heatPanel.appendChild(createText("h3", "usage-panel-title", "Activity"));
+  const heatmap = usageSnapshot && usageSnapshot.heatmap ? usageSnapshot.heatmap : null;
+  heatPanel.appendChild(createUsageHeatmap(heatmap));
+  const heatStats = document.createElement("div");
+  heatStats.className = "usage-heat-stats";
+  heatStats.appendChild(createMiniStat("Active days", formatCompactNumber(heatmap && heatmap.activeDays), `${heatmap && heatmap.activeRate || 0}% of year`));
+  heatStats.appendChild(createMiniStat("Streak", formatCompactNumber(heatmap && heatmap.streakDays), "current"));
+  heatStats.appendChild(createMiniStat("Peak day", heatmap && heatmap.peakDay ? formatCompactNumber(metricTokens(heatmap.peakDay.totals)) : "0", heatmap && heatmap.peakDay ? heatmap.peakDay.day : ""));
+  heatPanel.appendChild(heatStats);
+  heatPanel.appendChild(createActivityDepth(heatmap));
+  section.appendChild(heatPanel);
 
   const agentsPanel = document.createElement("div");
   agentsPanel.className = "usage-panel";
   agentsPanel.appendChild(createText("h3", "usage-panel-title", "Agents"));
-  agentsPanel.appendChild(createAgentUsageList(today));
+  agentsPanel.appendChild(createAgentUsageList(usage));
   section.appendChild(agentsPanel);
 
-  const chartPanel = document.createElement("div");
-  chartPanel.className = "usage-panel chart-panel";
-  chartPanel.appendChild(createText("h3", "usage-panel-title", "Trend"));
-  chartPanel.appendChild(renderUsageChart(usageSnapshot && usageSnapshot.days));
-  section.appendChild(chartPanel);
+  const modelsPanel = document.createElement("div");
+  modelsPanel.className = "usage-panel";
+  modelsPanel.appendChild(createText("h3", "usage-panel-title", "Models"));
+  modelsPanel.appendChild(createModelBreakdown(usage));
+  section.appendChild(modelsPanel);
+
+  section.appendChild(createProjectUsagePanel(usage));
+  section.appendChild(createCostAnalysisPanel(usage));
+  section.appendChild(createContextBreakdownPanel(usage));
+  section.appendChild(createUsageDetailsPanel(days));
   return section;
 }
 

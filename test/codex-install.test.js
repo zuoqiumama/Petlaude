@@ -14,6 +14,7 @@ const { CODEX_DEBUG_HOOK_EVENTS, registerCodexDebugHooks } = require("../hooks/c
 
 const MARKER = "codex-hook.js";
 const DEBUG_MARKER = "codex-debug-hook.js";
+const SHIM_NAME = "clawd-codex-hook.js";
 const tempDirs = [];
 
 function makeTempCodexDir(initialHooks = null, configText = null) {
@@ -32,6 +33,11 @@ function makeTempCodexDir(initialHooks = null, configText = null) {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function decodeHookCommandScript(command) {
+  const matches = [...String(command || "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  return matches[matches.length - 1] || "";
 }
 
 afterEach(() => {
@@ -67,7 +73,18 @@ describe("Codex official hook installer", () => {
       assert.strictEqual(hook.timeout, event === "PermissionRequest" ? 600 : 30);
       assert.ok(hook.command.includes(MARKER));
       assert.ok(hook.command.includes("/usr/local/bin/node"));
+      assert.strictEqual(
+        decodeHookCommandScript(hook.command),
+        path.join(codexDir, "hooks", SHIM_NAME).replace(/\\/g, "/")
+      );
     }
+
+    const shimPath = path.join(codexDir, "hooks", SHIM_NAME);
+    assert.ok(fs.existsSync(shimPath), "installer should write the Codex hook shim");
+    assert.ok(
+      fs.readFileSync(shimPath, "utf8").includes(path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/")),
+      "shim should point at the real Clawd Codex hook"
+    );
   });
 
   it("is idempotent on second run", () => {
@@ -181,8 +198,28 @@ describe("Codex official hook installer", () => {
     const command = settings.hooks.SessionStart[0].hooks[0].command;
     assert.strictEqual(
       command,
-      "CLAWD_REMOTE='1' \"/usr/local/bin/node\" \"" + path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/") + "\""
+      "CLAWD_REMOTE='1' \"/usr/local/bin/node\" \"" + path.join(codexDir, "hooks", SHIM_NAME).replace(/\\/g, "/") + "\""
     );
+  });
+
+  it("uses CODEX_HOME when no codexDir option is provided", () => {
+    const codexDir = makeTempCodexDir({});
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexDir;
+    try {
+      const result = registerCodexHooks({
+        silent: true,
+        nodeBin: "/usr/local/bin/node",
+        platform: "linux",
+      });
+
+      assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length);
+      assert.ok(fs.existsSync(path.join(codexDir, "hooks.json")));
+      assert.ok(fs.existsSync(path.join(codexDir, "hooks", SHIM_NAME)));
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+    }
   });
 
   it("registers Windows remote hooks with a PowerShell env prefix", () => {
@@ -200,7 +237,7 @@ describe("Codex official hook installer", () => {
     const command = settings.hooks.SessionStart[0].hooks[0].command;
     assert.strictEqual(
       command,
-      "$env:CLAWD_REMOTE='1'; & \"C:\\node.exe\" \"" + path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/") + "\""
+      "$env:CLAWD_REMOTE='1'; & \"C:\\node.exe\" \"" + path.join(codexDir, "hooks", SHIM_NAME).replace(/\\/g, "/") + "\""
     );
   });
 

@@ -13,6 +13,7 @@ const {
   extractCodexSessionIdFromTranscriptPath,
   normalizeCodexSessionId,
   readFirstSessionMeta,
+  requestCodexPermission,
   sanitizeCodexPermissionOutput,
 } = require("../hooks/codex-hook");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
@@ -438,6 +439,43 @@ describe("Codex official hook", () => {
   it("returns no-decision output for invalid PermissionRequest responses", () => {
     assert.strictEqual(sanitizeCodexPermissionOutput("not json"), buildCodexNoDecisionOutput());
     assert.strictEqual(sanitizeCodexPermissionOutput(JSON.stringify({ hookSpecificOutput: null })), "{}");
+  });
+
+  it("returns no-decision output when Clawd is not running", async () => {
+    const output = await new Promise((resolve) => {
+      requestCodexPermission(
+        { tool_name: "shell_command" },
+        resolve,
+        {
+          postPermissionToRunningServer(_body, _options, cb) {
+            cb(false, null, "", 0);
+          },
+        }
+      );
+    });
+
+    assert.strictEqual(output, "{}");
+  });
+
+  it("passes through sanitized Clawd allow decisions when Clawd is running", async () => {
+    const output = await new Promise((resolve) => {
+      requestCodexPermission(
+        { tool_name: "shell_command" },
+        resolve,
+        {
+          postPermissionToRunningServer(_body, _options, cb) {
+            cb(true, 23333, JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: { behavior: "allow", updatedInput: { ignored: true } },
+              },
+            }), 200);
+          },
+        }
+      );
+    });
+
+    assert.deepStrictEqual(JSON.parse(output).hookSpecificOutput.decision, { behavior: "allow" });
   });
 
   it("writes no stdout and exits 0 when stop_hook_active=true", () => {

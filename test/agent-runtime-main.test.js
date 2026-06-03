@@ -85,7 +85,7 @@ describe("agent-runtime-main", () => {
     );
   });
 
-  it("maps Codex JSONL monitor permission and state callbacks through the main runtime effects", () => {
+  it("normalizes legacy Codex JSONL permission callbacks without showing passive notify bubbles", () => {
     const instances = [];
     const calls = [];
     const classifier = { classify: () => null };
@@ -116,21 +116,24 @@ describe("agent-runtime-main", () => {
     monitor.emit("sid", "working", "response_item:web_search_call", {
       cwd: "D:\\repo",
       sessionTitle: "Run tests",
+      model: "gpt-5-codex",
       headless: true,
     });
 
     assert.deepStrictEqual(calls, [
-      ["update", "sid", "notification", "event_msg:exec_command_end", {
+      ["clear", "sid", "codex-state-transition:working"],
+      ["update", "sid", "working", "event_msg:exec_command_end", {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Run tests",
+        headless: true,
       }],
-      ["notify", { sessionId: "sid", command: "npm test" }],
       ["clear", "sid", "codex-state-transition:working"],
       ["update", "sid", "working", "response_item:web_search_call", {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Run tests",
+        model: "gpt-5-codex",
         headless: true,
       }],
     ]);

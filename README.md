@@ -63,7 +63,53 @@ The focus system (used by "Go to" buttons and session switching) has been harden
 ### Permission Bubble Agent Labels
 
 Permission bubbles now show the agent's display name ("Claude Code Permission Request" instead of the generic title), making it clear which agent is asking for access — especially useful when running multiple agents simultaneously.
+
+### Usage Cost Tracking
+
+Every tracked session now includes **cost estimates** powered by a multi-tier model pricing engine. The resolver matches model names against curated overrides, a LiteLLM pricing snapshot (~2,000+ models), and fuzzy fallback rules — covering mainstream providers (Claude, GPT, Gemini) plus niche agents like Kiro, Qwen, and Antigravity. Token usage is priced per million tokens (input, output, cache read, cache write, reasoning) and displayed as USD estimates throughout the dashboard.
+
+Token normalization has been upgraded to the **canonical v2 schema** with full breakdown support: input tokens, cached input, cache creation input, output tokens, reasoning output, and unattributed tokens. The system automatically corrects for agents that report input tokens inclusive of cache reads (Codex, Copilot, EveryCode).
+
+### Automatic Model Detection
+
+Model names are now **resolved from agent transcript files** when the hook payload doesn't include them directly. For Codex, the resolver walks UUID v7 session directories (date-based lookup) and reads the JSONL transcript tail to extract the model. For Claude Code, it scans the transcript JSONL for assistant messages with usage data. Results are cached per session to avoid repeated file I/O.
+
+### Enhanced Dashboard — Period Tabs & Provider Overview
+
+The usage dashboard has been redesigned with **period selectors** (Today / 7 days / 30 days / Total) that re-aggregate all dimensions on the fly:
+
+- **Provider overview** — colored bar chart and cards showing token share, cost, and top models per AI provider
+- **Stats panel** — 7-day and 30-day rolling totals, average active day metrics, conversation counts, and top model highlight
+- **Cost column** — every agent row now shows estimated USD cost alongside token counts
+- **Token type breakdown** — detailed inline display: `input / cache / output / reasoning / unknown`
+
+<p align="center">
+  <img src="img/dashboard.png" width="600" alt="Dashboard with usage charts">
+  <br><sub>Dashboard — session list with usage analytics charts</sub>
+</p>
+
+### Usage Heatmap
+
+A **GitHub-style contribution heatmap** (53 weeks × 7 days) visualizes your coding activity over the past year. Hover any cell to see the day's token count, models used, and provider breakdown. Tracks active day rate, current streak, and peak day — giving you a bird's-eye view of your AI coding habits.
+
+### Multi-Dimensional Aggregation
+
+Usage data is now aggregated across **five dimensions** simultaneously — by agent, source (provider), model, project, and time bucket — all computed from a single event stream. Half-hour UTC buckets power the hourly trend chart; monthly roll-ups feed the long-term trend line; per-project breakdowns let you see which codebases consume the most tokens.
+
+### Context Breakdown & Cost Analysis
+
+The analytics engine exposes structured **context breakdown** (what percentage of tokens went to input vs. cache vs. output vs. reasoning) and **cost analysis** (per-source and per-model cost estimates with priced/unpriced token ratios). These are available to the dashboard and can be consumed programmatically via the snapshot API.
+
+### Codex Hook Shim
+
+Codex hook registration now generates a **shim script** that spawns the real hook as a child process. If the hook script is missing or crashes, the shim fails open (returns a safe "no decision") rather than blocking the agent. This eliminates a class of hangs where Codex would wait indefinitely for a hook that never responded.
+
+### Expanded Agent Compatibility
+
+All agent hooks now recognize **40+ token field name variants** across camelCase, snake_case, and vendor-specific formats — covering edge cases from Copilot's `tokensIn`/`tokensOut` to Gemini's `promptTokenCount`/`candidatesTokenCount`. Provider metadata is forwarded from hook payloads through the state machine to the analytics ledger, enabling accurate per-provider pricing.
+
 ---
+
 
 ## Pet Features
 

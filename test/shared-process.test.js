@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const {
   getPlatformConfig,
   createPidResolver,
+  parseStdinJsonText,
   readStdinJson,
   buildElectronLaunchConfig,
 } = require("../hooks/shared-process");
@@ -162,6 +163,15 @@ describe("buildElectronLaunchConfig()", () => {
     assert.strictEqual(cfg.env.ELECTRON_RUN_AS_NODE, undefined);
     assert.strictEqual(cfg.env.ELECTRON_DISABLE_SANDBOX, "1");
     assert.strictEqual(cfg.env.CHROME_DEVEL_SANDBOX, "");
+  });
+});
+
+describe("parseStdinJsonText()", () => {
+  it("parses JSON with a UTF-8 BOM prefix", () => {
+    assert.deepStrictEqual(
+      parseStdinJsonText("\uFEFF{\"hook_event_name\":\"PermissionRequest\"}\n"),
+      { hook_event_name: "PermissionRequest" }
+    );
   });
 });
 

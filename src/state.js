@@ -892,6 +892,10 @@ function updateSession(sessionId, state, event, opts = {}) {
       event: meta.event !== undefined ? meta.event : event,
       agentId: meta.agentId || agentId || (sessionForPerm && sessionForPerm.agentId) || null,
       host: meta.host || host || (sessionForPerm && sessionForPerm.host) || null,
+      cwd: meta.cwd || cwd || (sessionForPerm && sessionForPerm.cwd) || null,
+      model: meta.model || model || (sessionForPerm && sessionForPerm.model) || null,
+      provider: meta.provider || provider || (sessionForPerm && sessionForPerm.provider) || null,
+      source: meta.source || agentId || (sessionForPerm && sessionForPerm.agentId) || null,
       tokenUsage: tokenUsage || null,
       usageEventId: usageEventId || null,
     };

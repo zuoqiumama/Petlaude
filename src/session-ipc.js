@@ -29,7 +29,7 @@ function registerSessionIpc(options = {}) {
   }
 
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
-  handle("dashboard:get-usage-snapshot", () => getUsageSnapshot({ days: 7 }));
+  handle("dashboard:get-usage-snapshot", () => getUsageSnapshot({ days: 370 }));
   handle("usage-hover:get-snapshot", () => getUsageSnapshot({ days: 1 }));
   handle("dashboard:get-i18n", () => getI18n());
   on("dashboard:focus-session", (_event, sessionId) =>

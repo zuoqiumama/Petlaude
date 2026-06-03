@@ -150,9 +150,30 @@ const TOKEN_USAGE_FIELD_NAMES = [
   "prompt_tokens",
   "completion_tokens",
   "total_tokens",
+  "inputTokens",
+  "outputTokens",
+  "tokensIn",
+  "tokensOut",
+  "prompt_token_count",
+  "candidates_token_count",
+  "total_token_count",
+  "cached_input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cache_write_input_tokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "cacheCreationTokens",
+  "reasoning_output_tokens",
+  "reasoning_tokens",
+  "reasoningTokens",
+  "thoughts_tokens",
+  "thinking_tokens",
+  "thoughtsTokenCount",
   "promptTokenCount",
   "candidatesTokenCount",
   "totalTokenCount",
+  "totalTokens",
 ];
 
 function extractExplicitTokenUsage(payload) {
@@ -196,6 +217,7 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
 
   if (payload && typeof payload.cwd === "string" && payload.cwd) body.cwd = payload.cwd;
   if (payload && typeof payload.model === "string" && payload.model) body.model = payload.model;
+  if (payload && typeof payload.provider === "string" && payload.provider) body.provider = payload.provider;
   if (payload && typeof payload.permission_mode === "string" && payload.permission_mode) {
     body.permission_mode = payload.permission_mode;
   }

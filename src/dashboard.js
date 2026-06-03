@@ -45,7 +45,7 @@ module.exports = function initDashboard(ctx) {
 
   function getCurrentUsageSnapshot() {
     return typeof ctx.getUsageSnapshot === "function"
-      ? ctx.getUsageSnapshot({ days: 7 })
+      ? ctx.getUsageSnapshot({ days: 370 })
       : null;
   }
 

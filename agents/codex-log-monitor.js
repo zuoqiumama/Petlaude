@@ -7,9 +7,9 @@
 //      older than monitor start. Only helps lines that carry a timestamp.
 //   2. File-level: _pollFile sets tracked.backfilling when attaching to a
 //      file whose mtime predates monitor start. _processLine then suppresses
-//      historical emits + deferred timers until the first read drains, then
+//      historical emits until the first read drains, then
 //      _emitBackfillSnapshot may synthesize ONE current sustained state
-//      (thinking / working / codex-permission). Works for any line shape,
+//      (thinking / working). Works for any line shape,
 //      covers what layer 1 can't.
 // The two overlap but don't duplicate each other — collapsing them takes a
 // refactor, not a tweak.
@@ -20,7 +20,6 @@ const os = require("os");
 const CodexSubagentClassifier = require("./codex-subagent-classifier");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
 
-const APPROVAL_HEURISTIC_MS = 2000;
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
 const MAX_PARTIAL_BYTES = 65536;
@@ -35,7 +34,7 @@ const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
 // replay it silently (backfill) instead of emitting stale transitions. A
 // file written within the grace window is a live session and emits normally.
 const BACKFILL_GRACE_MS = 5 * 1000;
-const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working", "codex-permission"]);
+const BACKFILL_SNAPSHOT_STATES = new Set(["thinking", "working"]);
 const TOKEN_USAGE_FIELD_NAMES = [
   "input",
   "output",
@@ -45,9 +44,30 @@ const TOKEN_USAGE_FIELD_NAMES = [
   "prompt_tokens",
   "completion_tokens",
   "total_tokens",
+  "inputTokens",
+  "outputTokens",
+  "tokensIn",
+  "tokensOut",
+  "prompt_token_count",
+  "candidates_token_count",
+  "total_token_count",
+  "cached_input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cache_write_input_tokens",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "cacheCreationTokens",
+  "reasoning_output_tokens",
+  "reasoning_tokens",
+  "reasoningTokens",
+  "thoughts_tokens",
+  "thinking_tokens",
+  "thoughtsTokenCount",
   "promptTokenCount",
   "candidatesTokenCount",
   "totalTokenCount",
+  "totalTokens",
 ];
 
 function resolveCodexHome() {
@@ -57,28 +77,113 @@ function resolveCodexHome() {
   return trimmed || null;
 }
 
-function pickTokenUsageSource(payload) {
-  if (!payload || typeof payload !== "object") return null;
+function pickTokenUsageInfo(payload) {
+  if (!payload || typeof payload !== "object") {
+    return { lastUsage: null, totalUsage: null, directUsage: null };
+  }
+  const msg = payload.msg && typeof payload.msg === "object" ? payload.msg : null;
   const info = payload.info && typeof payload.info === "object" ? payload.info : null;
-  const candidates = [
-    info && info.last_token_usage,
-    info && info.lastTokenUsage,
-    payload.last_token_usage,
-    payload.lastTokenUsage,
-    payload.token_usage,
-    payload.tokenUsage,
-    payload.usage,
-    payload.tokens,
-    info && info.total_token_usage,
-    info && info.totalTokenUsage,
-    payload.total_token_usage,
-    payload.totalTokenUsage,
-    payload,
-  ];
-  for (const candidate of candidates) {
-    if (candidate && typeof candidate === "object") return candidate;
+  const msgInfo = msg && msg.info && typeof msg.info === "object" ? msg.info : null;
+  const firstObject = (...values) => {
+    for (const value of values) {
+      if (value && typeof value === "object") return value;
+    }
+    return null;
+  };
+  return {
+    lastUsage: firstObject(
+      info && info.last_token_usage,
+      info && info.lastTokenUsage,
+      msgInfo && msgInfo.last_token_usage,
+      msgInfo && msgInfo.lastTokenUsage,
+      payload.last_token_usage,
+      payload.lastTokenUsage,
+      msg && msg.last_token_usage,
+      msg && msg.lastTokenUsage
+    ),
+    totalUsage: firstObject(
+      info && info.total_token_usage,
+      info && info.totalTokenUsage,
+      msgInfo && msgInfo.total_token_usage,
+      msgInfo && msgInfo.totalTokenUsage,
+      payload.total_token_usage,
+      payload.totalTokenUsage,
+      msg && msg.total_token_usage,
+      msg && msg.totalTokenUsage
+    ),
+    directUsage: firstObject(
+      payload.token_usage,
+      payload.tokenUsage,
+      payload.usage,
+      payload.tokens,
+      msg && msg.token_usage,
+      msg && msg.tokenUsage,
+      msg && msg.usage,
+      msg && msg.tokens,
+      payload
+    ),
+  };
+}
+
+function isNonEmptyObject(value) {
+  return Boolean(value && typeof value === "object" && Object.keys(value).length > 0);
+}
+
+function tokenTotalValue(source) {
+  if (!source || typeof source !== "object") return null;
+  for (const key of ["total_tokens", "total", "totalTokenCount", "totalTokens"]) {
+    if (Number.isFinite(source[key])) return source[key];
   }
   return null;
+}
+
+function totalsReset(current, previous) {
+  const curr = tokenTotalValue(current);
+  const prev = tokenTotalValue(previous);
+  return Number.isFinite(curr) && Number.isFinite(prev) && curr < prev;
+}
+
+function diffNumericTokenFields(current, previous) {
+  if (!current || !previous) return null;
+  const out = {};
+  for (const key of TOKEN_USAGE_FIELD_NAMES) {
+    const a = Number(current[key]);
+    const b = Number(previous[key]);
+    if (Number.isFinite(a) && Number.isFinite(b)) out[key] = Math.max(0, a - b);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function isAllZeroUsage(source) {
+  if (!source || typeof source !== "object") return true;
+  for (const key of TOKEN_USAGE_FIELD_NAMES) {
+    if ((Number(source[key]) || 0) > 0) return false;
+  }
+  return true;
+}
+
+function pickTokenUsageDelta(payload, previousTotalUsage) {
+  const info = pickTokenUsageInfo(payload);
+  const lastUsage = extractNumericTokenFields(info.lastUsage);
+  const totalUsage = extractNumericTokenFields(info.totalUsage);
+  let delta = null;
+  if (totalUsage && previousTotalUsage) {
+    delta = totalsReset(totalUsage, previousTotalUsage)
+      ? (lastUsage || totalUsage)
+      : diffNumericTokenFields(totalUsage, previousTotalUsage);
+  } else if (lastUsage) {
+    delta = lastUsage;
+  } else if (totalUsage) {
+    delta = totalUsage;
+  } else {
+    delta = extractNumericTokenFields(info.directUsage);
+  }
+  if (!delta || isAllZeroUsage(delta)) return { tokenUsage: null, totalUsage };
+  return { tokenUsage: delta, totalUsage };
+}
+
+function pickTokenUsageSource(payload) {
+  return pickTokenUsageInfo(payload).directUsage;
 }
 
 function extractNumericTokenFields(source) {
@@ -142,9 +247,6 @@ class CodexLogMonitor {
     if (this._interval) {
       clearInterval(this._interval);
       this._interval = null;
-    }
-    for (const tracked of this._tracked.values()) {
-      if (tracked.approvalTimer) clearTimeout(tracked.approvalTimer);
     }
     this._tracked.clear();
     this._retiredTracked.clear();
@@ -349,6 +451,7 @@ class CodexLogMonitor {
         filePath,
         cwd: retired ? retired.cwd : "",
         sessionTitle: retired ? retired.sessionTitle : null,
+        model: retired ? retired.model : null,
         codexOriginator: retired ? retired.codexOriginator : null,
         codexSource: retired ? retired.codexSource : null,
         lastEventTime: Date.now(),
@@ -359,7 +462,7 @@ class CodexLogMonitor {
         hadToolUse: retired ? retired.hadToolUse === true : false,
         isSubagent: retired ? retired.isSubagent === true : false,
         agentPid: retired ? retired.agentPid : null,
-        pendingApprovalDetail: null,
+        lastTokenTotalUsage: retired ? retired.lastTokenTotalUsage : null,
         // Backfill mode: only a file whose last write predates monitor
         // start (by more than BACKFILL_GRACE_MS) is treated as stale
         // history — we replay it silently to advance offset + pick up
@@ -425,7 +528,9 @@ class CodexLogMonitor {
     const payload = obj.payload;
     tracked.eventSeq = (tracked.eventSeq || 0) + 1;
     const subtype =
-      payload && typeof payload === "object" ? payload.type || "" : "";
+      payload && typeof payload === "object"
+        ? payload.type || (payload.msg && typeof payload.msg === "object" ? payload.msg.type || "" : "")
+        : "";
 
     // Build lookup key
     const key = subtype ? type + ":" + subtype : type;
@@ -434,6 +539,15 @@ class CodexLogMonitor {
     // record itself predates monitor start.
     if (type === "session_meta") {
       this._applySessionMeta(payload, tracked);
+    }
+    if (
+      (type === "turn_context" || type === "session_meta") &&
+      payload &&
+      typeof payload === "object" &&
+      typeof payload.model === "string" &&
+      payload.model.trim()
+    ) {
+      tracked.model = payload.model.trim();
     }
 
     // Skip historical events that predate monitor start — prevents replay
@@ -457,7 +571,8 @@ class CodexLogMonitor {
     }
 
     if (key === "event_msg:token_count") {
-      const tokenUsage = this._extractExplicitTokenUsage(payload);
+      const { tokenUsage, totalUsage } = this._extractExplicitTokenUsage(payload, tracked);
+      if (totalUsage) tracked.lastTokenTotalUsage = totalUsage;
       if (!tokenUsage) return;
       if (tracked.backfilling) return;
       const usageState = tracked.lastState || "idle";
@@ -467,25 +582,6 @@ class CodexLogMonitor {
         preserveState: true,
       });
       return;
-    }
-
-    // Approval heuristic: exec_command_end / function_call_output means command finished.
-    // guardian_assessment is Codex Desktop auto-review approving or checking the shell
-    // call before it runs; once present, the shell is not waiting on the user-facing
-    // approval prompt this heuristic is trying to infer.
-    if (
-      key === "event_msg:exec_command_end"
-      || key === "response_item:function_call_output"
-      || this._isGuardianApprovalActivity(payload)
-    ) {
-      if (tracked.approvalTimer) {
-        clearTimeout(tracked.approvalTimer);
-        tracked.approvalTimer = null;
-      }
-      tracked.pendingApprovalDetail = null;
-      if (tracked.backfilling && tracked.lastState === "codex-permission") {
-        tracked.lastState = "working";
-      }
     }
 
     // Look up state mapping
@@ -505,11 +601,6 @@ class CodexLogMonitor {
 
     // Turn-end: happy if tools were used this turn, idle otherwise
     if (state === "codex-turn-end") {
-      if (tracked.approvalTimer) {
-        clearTimeout(tracked.approvalTimer);
-        tracked.approvalTimer = null;
-      }
-      tracked.pendingApprovalDetail = null;
       const resolved = this._isTrackedSubagent(tracked)
         ? "idle"
         : (tracked.hadToolUse ? "attention" : "idle");
@@ -520,40 +611,13 @@ class CodexLogMonitor {
       return;
     }
 
-    // Approval heuristic: function_call starts a 2s timer — if no exec_command_end arrives,
-    // assume Codex is waiting for user approval and emit codex-permission.
-    // Explicit escalated requests (sandbox_permissions/justification) skip the timer.
-    if (key === "response_item:function_call") {
-      if (tracked.approvalTimer) clearTimeout(tracked.approvalTimer);
-      const cmd = this._extractShellCommand(payload);
-      tracked.pendingApprovalDetail = cmd
-        ? { command: cmd, rawPayload: payload }
-        : null;
-      if (cmd) {
-        if (this._isExplicitApprovalRequest(payload)) {
-          tracked.lastState = "codex-permission";
-          if (tracked.backfilling) return;
-          this._emitStateChange(tracked, "codex-permission", key, {
-            permissionDetail: tracked.pendingApprovalDetail,
-          });
-          return;
-        }
-        if (tracked.backfilling) {
-          tracked.lastState = "codex-permission";
-          return;
-        }
-        tracked.approvalTimer = setTimeout(() => {
-          tracked.approvalTimer = null;
-          tracked.lastState = "codex-permission";
-          this._emitStateChange(tracked, "codex-permission", key, {
-            permissionDetail: tracked.pendingApprovalDetail,
-          });
-        }, APPROVAL_HEURISTIC_MS);
-      }
-    }
+    // Do not infer approval prompts from JSONL function_call duration. Codex
+    // Desktop writes function_call before a normal tool finishes, so slow
+    // shell/test commands look identical to approval waits here. Real Codex
+    // approvals are handled by the official PermissionRequest hook path.
 
     // Backfill gate: first-pass replay of a file's historical content skips
-    // every callback and every deferred approval timer, but it still updates
+    // every callback, but it still updates
     // internal state so attach can synthesize the current visible state once.
     // Independent of the timestamp-based replay guard, which only helps lines
     // that carry a timestamp field.
@@ -571,6 +635,9 @@ class CodexLogMonitor {
   _applySessionMeta(payload, tracked) {
     if (!payload || typeof payload !== "object") return;
     tracked.cwd = payload.cwd || "";
+    if (typeof payload.model === "string" && payload.model.trim()) {
+      tracked.model = payload.model.trim();
+    }
     tracked.codexOriginator = typeof payload.originator === "string" && payload.originator.trim()
       ? payload.originator.trim()
       : tracked.codexOriginator;
@@ -611,34 +678,13 @@ class CodexLogMonitor {
     return "";
   }
 
-  _isExplicitApprovalRequest(payload) {
-    if (!payload || typeof payload !== "object") return false;
-    if (payload.name !== "shell_command" && payload.name !== "exec_command") return false;
-    try {
-      const args = typeof payload.arguments === "string"
-        ? JSON.parse(payload.arguments) : payload.arguments;
-      if (!args || typeof args !== "object") return false;
-      if (args.sandbox_permissions === "require_escalated") return true;
-      if (typeof args.justification === "string" && args.justification.trim()) return true;
-    } catch {}
-    return false;
-  }
-
-  _isGuardianApprovalActivity(payload) {
-    if (!payload || typeof payload !== "object") return false;
-    if (payload.type !== "guardian_assessment") return false;
-    return payload.status === "in_progress" || payload.status === "approved";
-  }
-
-  _extractExplicitTokenUsage(payload) {
-    return extractNumericTokenFields(pickTokenUsageSource(payload));
+  _extractExplicitTokenUsage(payload, tracked = null) {
+    return pickTokenUsageDelta(payload, tracked && tracked.lastTokenTotalUsage);
   }
 
   _buildTokenUsageEventId(tracked, key, payload, tokenUsage) {
-    const totalUsage = payload
-      && payload.info
-      && typeof payload.info === "object"
-      && extractNumericTokenFields(payload.info.total_token_usage || payload.info.totalTokenUsage);
+    const info = pickTokenUsageInfo(payload);
+    const totalUsage = extractNumericTokenFields(info.totalUsage);
     if (!totalUsage) return `${tracked.sessionId}:${key}:${tracked.eventSeq}`;
     const source = totalUsage || tokenUsage || {};
     const parts = TOKEN_USAGE_FIELD_NAMES
@@ -725,7 +771,6 @@ class CodexLogMonitor {
   }
 
   _retireTrackedFile(filePath, tracked) {
-    if (tracked && tracked.approvalTimer) clearTimeout(tracked.approvalTimer);
     this._tracked.delete(filePath);
     if (!filePath || !tracked) return;
     this._retiredTracked.delete(filePath);
@@ -733,6 +778,7 @@ class CodexLogMonitor {
       offset: Number.isFinite(tracked.offset) ? tracked.offset : 0,
       cwd: tracked.cwd || "",
       sessionTitle: tracked.sessionTitle || null,
+      model: tracked.model || null,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
       lastState: tracked.lastState || null,
@@ -741,6 +787,7 @@ class CodexLogMonitor {
       hadToolUse: tracked.hadToolUse === true,
       isSubagent: tracked.isSubagent === true,
       agentPid: tracked.agentPid || null,
+      lastTokenTotalUsage: tracked.lastTokenTotalUsage || null,
     });
     while (this._retiredTracked.size > MAX_RETIRED_TRACKED_FILES) {
       const oldest = this._retiredTracked.keys().next().value;
@@ -751,14 +798,10 @@ class CodexLogMonitor {
   _emitBackfillSnapshot(tracked) {
     const snapshotState = tracked.lastState;
     if (!BACKFILL_SNAPSHOT_STATES.has(snapshotState)) return;
-    const extra = snapshotState === "codex-permission" && tracked.pendingApprovalDetail
-      ? { permissionDetail: tracked.pendingApprovalDetail }
-      : null;
     this._emitStateChange(
       tracked,
       snapshotState,
-      tracked.lastStateEvent || "session_meta",
-      extra
+      tracked.lastStateEvent || "session_meta"
     );
   }
 
@@ -792,6 +835,7 @@ class CodexLogMonitor {
         ? extra.agentPid
         : agentPid,
       sessionTitle: tracked.sessionTitle,
+      model: tracked.model || null,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
       ...(extra || {}),

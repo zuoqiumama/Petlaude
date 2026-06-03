@@ -97,17 +97,17 @@ describe("dashboard window", () => {
     };
   }
 
-  it("updates its background color when native theme changes", () => {
+  it("keeps the dashboard window background transparent across native theme changes", () => {
     const { dashboard, nativeTheme, getCreatedWindow } = createWindowHarness();
 
     dashboard.showDashboard();
     const createdWindow = getCreatedWindow();
-    assert.strictEqual(createdWindow.opts.backgroundColor, "#56565c");
+    assert.strictEqual(createdWindow.opts.backgroundColor, "#00000000");
 
     nativeTheme.shouldUseDarkColors = true;
     nativeTheme.emit("updated");
 
-    assert.deepStrictEqual(createdWindow.backgroundColors, ["#56565c", "#56565c"]);
+    assert.deepStrictEqual(createdWindow.backgroundColors, ["#00000000"]);
   });
 
   it("centers the dashboard on the pet work area by default", () => {
@@ -260,9 +260,26 @@ describe("dashboard window", () => {
     assert.match(preloadSource, /onUsageSnapshot/);
     assert.match(rendererSource, /createUsageSection/);
     assert.match(rendererSource, /renderUsageChart/);
+    assert.match(rendererSource, /createStatsPanel/);
+    assert.match(rendererSource, /createProviderOverview/);
+    assert.match(rendererSource, /createProjectUsagePanel/);
+    assert.match(rendererSource, /createCostAnalysisPanel/);
+    assert.match(rendererSource, /createContextBreakdownPanel/);
+    assert.match(rendererSource, /createUsageDetailsPanel/);
+    assert.match(rendererSource, /Activity Depth/);
+    assert.match(`${rendererSource}\n${htmlSource}`, /usage-provider-overview/);
+    assert.match(`${rendererSource}\n${htmlSource}`, /usage-project-panel/);
     assert.match(htmlSource, /usage-section/);
     assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /reported tokens/i);
     assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /Daily reported tokens/i);
     assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /Tokens \+ Time/);
+  });
+
+  it("keeps Cost Analysis model-based instead of mixing provider totals into the same table", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+    const costPanelSource = rendererSource.match(/function createCostAnalysisPanel[\s\S]*?function contextRowsFromUsage/)[0];
+
+    assert.match(costPanelSource, /usage\.models/);
+    assert.doesNotMatch(costPanelSource, /usage\.sources/);
   });
 });

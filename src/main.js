@@ -14,6 +14,7 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { createUsageAnalytics, encodeLedgerEntry } = require("./usage-analytics");
+const { createUsageModelResolver } = require("./usage-model-resolver");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
 const { registerPermissionIpc } = initPermission;
@@ -1128,7 +1129,10 @@ let showDashboard = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let broadcastDashboardUsageSnapshot = () => {};
 let sendDashboardI18n = () => {};
-const usageAnalytics = createUsageAnalytics();
+const usageModelResolver = createUsageModelResolver();
+const usageAnalytics = createUsageAnalytics({
+  resolveModelForEvent: usageModelResolver.resolveModelForEvent,
+});
 let usageLedgerPath = null;
 
 function getUsageSnapshot(options = {}) {
@@ -1160,7 +1164,7 @@ function recordUsageEvent(payload) {
   if (!payload || typeof payload !== "object") return;
   usageAnalytics.recordState(payload);
   appendUsageLedger(payload);
-  broadcastDashboardUsageSnapshot(getUsageSnapshot({ days: 7 }));
+  broadcastDashboardUsageSnapshot(getUsageSnapshot({ days: 370 }));
   broadcastUsageHoverSnapshot(getUsageSnapshot({ days: 1 }));
 }
 

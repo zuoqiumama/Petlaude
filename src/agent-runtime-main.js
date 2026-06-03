@@ -31,7 +31,6 @@ function createAgentRuntimeMain(options = {}) {
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
-  const showCodexNotifyBubble = options.showCodexNotifyBubble || (() => {});
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
 
   let codexMonitor = null;
@@ -125,18 +124,9 @@ function createAgentRuntimeMain(options = {}) {
       const codexAgent = loadCodexAgent();
       codexMonitor = new CodexLogMonitor(codexAgent, (sid, state, event, extra) => {
         if (shouldSuppressCodexLogEvent(sid, state, event)) return;
-        if (isCodexMonitorPermissionEvent(state)) {
-          updateSession(sid, "notification", event, buildCodexMonitorUpdateOptions(extra, {
-            includeHeadless: false,
-          }));
-          showCodexNotifyBubble({
-            sessionId: sid,
-            command: (extra && extra.permissionDetail && extra.permissionDetail.command) || "",
-          });
-          return;
-        }
-        clearCodexNotifyBubbles(sid, `codex-state-transition:${state}`);
-        updateSession(sid, state, event, buildCodexMonitorUpdateOptions(extra, {
+        const normalizedState = isCodexMonitorPermissionEvent(state) ? "working" : state;
+        clearCodexNotifyBubbles(sid, `codex-state-transition:${normalizedState}`);
+        updateSession(sid, normalizedState, event, buildCodexMonitorUpdateOptions(extra, {
           includeHeadless: true,
         }));
       }, { classifier: codexSubagentClassifier });

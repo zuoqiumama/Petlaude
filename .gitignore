@@ -113,3 +113,6 @@ scripts/*
 # Brainstorm / intermediate artifacts
 .superpowers/
 bento-grid/
+
+# QA screenshots / scratch area
+scratch/

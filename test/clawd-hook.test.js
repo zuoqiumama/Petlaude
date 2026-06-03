@@ -917,6 +917,26 @@ describe("buildStateBody — transcript token usage fallback", () => {
     assert.strictEqual(body.usage_event_id, "claude-code:sid-1:Stop:transcript:80:20");
   });
 
+  it("extracts model from the transcript assistant usage entry when payload has none", () => {
+    const file = writeTmpJsonl([
+      {
+        type: "assistant",
+        message: {
+          model: "claude-sonnet-4-5",
+          usage: { input_tokens: 80, output_tokens: 20 },
+        },
+      },
+    ]);
+    const body = buildStateBody(
+      "Stop",
+      { session_id: "sid-1", transcript_path: file },
+      mockResolve
+    );
+
+    assert.strictEqual(body.model, "claude-sonnet-4-5");
+    assert.deepStrictEqual(body.token_usage, { input_tokens: 80, output_tokens: 20 });
+  });
+
   it("prefers payload token usage over transcript", () => {
     const file = writeTmpJsonl([
       {

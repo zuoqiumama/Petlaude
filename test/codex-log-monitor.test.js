@@ -429,7 +429,7 @@ describe("CodexLogMonitor", () => {
     }
   });
 
-  it("emits Codex Desktop nested last_token_usage once per cumulative total", () => {
+  it("emits Codex Desktop token_count once for unchanged cumulative totals", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp","originator":"Codex Desktop","source":"vscode"}}',
@@ -489,16 +489,73 @@ describe("CodexLogMonitor", () => {
 
     monitor._pollFile(testFile, path.basename(testFile));
 
+    assert.strictEqual(usageEvents.length, 1);
+    assert.deepStrictEqual(usageEvents[0].extra.tokenUsage, {
+      input_tokens: 3658,
+      cached_input_tokens: 3072,
+      output_tokens: 209,
+      reasoning_output_tokens: 0,
+      total_tokens: 3867,
+    });
+  });
+
+  it("emits Codex cumulative token_count deltas", () => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, [
+      '{"type":"session_meta","payload":{"cwd":"/tmp","model":"gpt-5-codex"}}',
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 40,
+              output_tokens: 20,
+              total_tokens: 120,
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 170,
+              cached_input_tokens: 60,
+              output_tokens: 35,
+              total_tokens: 205,
+            },
+          },
+        },
+      }),
+    ].join("\n") + "\n");
+
+    const config = makeConfig(tmpDir);
+    const usageEvents = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      if (event !== "event_msg:token_count") return;
+      usageEvents.push({ sid, state, extra });
+    });
+
+    monitor._pollFile(testFile, path.basename(testFile));
+
     assert.strictEqual(usageEvents.length, 2);
-    assert.deepStrictEqual(usageEvents.map((entry) => entry.extra.tokenUsage), [
-      { input_tokens: 3658, output_tokens: 209, total_tokens: 3867 },
-      { input_tokens: 3658, output_tokens: 209, total_tokens: 3867 },
-    ]);
-    assert.strictEqual(
-      usageEvents[0].extra.usageEventId,
-      usageEvents[1].extra.usageEventId,
-      "unchanged cumulative totals should dedupe downstream"
-    );
+    assert.deepStrictEqual(usageEvents[0].extra.tokenUsage, {
+      input_tokens: 100,
+      cached_input_tokens: 40,
+      output_tokens: 20,
+      total_tokens: 120,
+    });
+    assert.deepStrictEqual(usageEvents[1].extra.tokenUsage, {
+      input_tokens: 70,
+      cached_input_tokens: 20,
+      output_tokens: 15,
+      total_tokens: 85,
+    });
+    assert.strictEqual(usageEvents[1].extra.model, "gpt-5-codex");
   });
 
   it("should skip old files (>5min mtime)", (_, done) => {
@@ -610,7 +667,7 @@ describe("CodexLogMonitor", () => {
     }, 250);
   });
 
-  it("emits codex-permission before attention when attaching mid-turn to a stale pending shell call", (_, done) => {
+  it("emits working before attention when attaching mid-turn to a stale pending shell call", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
@@ -625,7 +682,7 @@ describe("CodexLogMonitor", () => {
     monitor = new CodexLogMonitor(config, (sid, state) => {
       seen.push(state);
       if (state === "attention") {
-        assert.deepStrictEqual(seen, ["codex-permission", "attention"]);
+        assert.deepStrictEqual(seen, ["working", "attention"]);
         done();
       }
     });
@@ -772,11 +829,10 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
-  // ── Approval heuristic tests ──
+  // ── JSONL permission fallback tests ──
 
-  it("should emit codex-permission after 2s timeout when no exec_command_end arrives", (_, done) => {
+  it("should keep a slow shell function_call in working instead of synthesizing codex-permission", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
-    // function_call with shell_command but no exec_command_end following
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
       '{"type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{\\"command\\":\\"rm -rf node_modules\\"}"}}',
@@ -784,15 +840,16 @@ describe("CodexLogMonitor", () => {
 
     const config = makeConfig(tmpDir);
     const states = [];
-    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+    monitor = new CodexLogMonitor(config, (sid, state) => {
       states.push(state);
-      if (state === "codex-permission") {
-        assert.strictEqual(extra.permissionDetail.command, "rm -rf node_modules");
-        assert.strictEqual(extra.cwd, "/projects/foo");
-        done();
-      }
     });
     monitor.start();
+
+    setTimeout(() => {
+      assert.ok(!states.includes("codex-permission"), "slow running tools are not approval prompts");
+      assert.ok(states.includes("working"));
+      done();
+    }, 2300);
   });
 
   it("should NOT emit codex-permission if exec_command_end arrives within 2s", (_, done) => {
@@ -811,7 +868,6 @@ describe("CodexLogMonitor", () => {
     });
     monitor.start();
 
-    // Wait 3s — if codex-permission doesn't appear, the timer was correctly cancelled
     setTimeout(() => {
       assert.ok(!states.includes("codex-permission"), "should not have emitted codex-permission");
       assert.ok(states.includes("idle"));
@@ -842,7 +898,7 @@ describe("CodexLogMonitor", () => {
     }, 3000);
   });
 
-  it("should return to working when guardian approves after an explicit permission signal", (_, done) => {
+  it("should keep explicit escalated requests in working and let Codex own approval UI", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
@@ -853,15 +909,39 @@ describe("CodexLogMonitor", () => {
     const states = [];
     monitor = new CodexLogMonitor(config, (sid, state) => {
       states.push(state);
-      if (state === "codex-permission") {
-        fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"guardian_assessment","status":"approved"}}\n');
-      }
-      if (state === "working" && states.includes("codex-permission")) {
-        assert.deepStrictEqual(states, ["idle", "codex-permission", "working"]);
-        done();
-      }
     });
     monitor.start();
+
+    setTimeout(() => {
+      assert.ok(!states.includes("codex-permission"), "explicit escalated requests are not passive Clawd prompts");
+      assert.ok(states.includes("working"));
+      done();
+    }, 700);
+  });
+
+  it("should NOT emit codex-permission when auto-review starts after an explicit escalated request", (_, done) => {
+    const testFile = path.join(dateDir, TEST_FILENAME);
+    fs.writeFileSync(testFile, '{"type":"session_meta","payload":{"cwd":"/tmp"}}\n');
+
+    const config = makeConfig(tmpDir);
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      states.push(state);
+    });
+    monitor.start();
+
+    setTimeout(() => {
+      fs.appendFileSync(testFile, [
+        '{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"npm run build\\",\\"sandbox_permissions\\":\\"require_escalated\\",\\"justification\\":\\"needs local build\\"}"}}',
+        '{"type":"event_msg","payload":{"type":"guardian_assessment","status":"in_progress"}}',
+      ].join("\n") + "\n");
+    }, 150);
+
+    setTimeout(() => {
+      assert.ok(!states.includes("codex-permission"), "should not emit permission while auto-review is active");
+      assert.ok(states.includes("working"));
+      done();
+    }, 700);
   });
 
   it("should NOT emit codex-permission for non-shell function calls", (_, done) => {
@@ -913,7 +993,7 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(monitor._extractShellCommand({}), "");
   });
 
-  it("should emit codex-permission for exec_command function calls", (_, done) => {
+  it("should keep exec_command function calls in working without a passive permission bubble", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
@@ -921,16 +1001,20 @@ describe("CodexLogMonitor", () => {
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      if (state === "codex-permission") {
-        assert.strictEqual(extra.permissionDetail.command, "git status");
-        done();
-      }
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      states.push(state);
     });
     monitor.start();
+
+    setTimeout(() => {
+      assert.ok(!states.includes("codex-permission"), "exec_command is normal working state in JSONL fallback");
+      assert.ok(states.includes("working"));
+      done();
+    }, 2300);
   });
 
-  it("should emit codex-permission immediately for explicit escalated requests", (_, done) => {
+  it("should not emit codex-permission for explicit escalated requests", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/projects/foo"}}',
@@ -938,17 +1022,17 @@ describe("CodexLogMonitor", () => {
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const startedAt = Date.now();
-    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      if (state === "codex-permission") {
-        const elapsed = Date.now() - startedAt;
-        // Should fire immediately (well under the 2s heuristic timer)
-        assert.ok(elapsed < 1500, `expected immediate permission signal, got ${elapsed}ms`);
-        assert.strictEqual(extra.permissionDetail.command, "git push");
-        done();
-      }
+    const states = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => {
+      states.push(state);
     });
     monitor.start();
+
+    setTimeout(() => {
+      assert.ok(!states.includes("codex-permission"), "official PermissionRequest owns real approvals");
+      assert.ok(states.includes("working"));
+      done();
+    }, 700);
   });
 
   describe("session title extraction (turn_context.summary)", () => {

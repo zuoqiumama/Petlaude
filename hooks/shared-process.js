@@ -280,6 +280,14 @@ function createPidResolver(options) {
 // Reads stdin, parses JSON, returns Promise<Object>.
 // 400ms timeout + finishOnce protection. Returns {} on parse failure or timeout.
 
+function parseStdinJsonText(raw) {
+  try {
+    const text = String(raw || "").replace(/^\uFEFF/, "");
+    if (text.trim()) return JSON.parse(text);
+  } catch {}
+  return {};
+}
+
 function readStdinJson() {
   return new Promise((resolve) => {
     const chunks = [];
@@ -294,10 +302,7 @@ function readStdinJson() {
       process.stdin.off("data", onData);
       process.stdin.off("end", finish);
       let payload = {};
-      try {
-        const raw = Buffer.concat(chunks).toString();
-        if (raw.trim()) payload = JSON.parse(raw);
-      } catch {}
+      payload = parseStdinJsonText(Buffer.concat(chunks).toString());
       resolve(payload);
     }
 
@@ -330,6 +335,7 @@ function buildElectronLaunchConfig(projectDir, options = {}) {
 module.exports = {
   getPlatformConfig,
   createPidResolver,
+  parseStdinJsonText,
   readStdinJson,
   buildElectronLaunchConfig,
 };

@@ -23,6 +23,7 @@ const CODEX_HOOK_EVENTS = [
 ];
 const CODEX_HOOKS_FEATURE_KEY = "hooks";
 const LEGACY_CODEX_HOOKS_FEATURE_KEY = "codex_hooks";
+const CODEX_HOOK_SHIM_NAME = "clawd-codex-hook.js";
 
 function timeoutForCodexEvent(event) {
   return event === "PermissionRequest" ? 600 : 30;
@@ -30,7 +31,8 @@ function timeoutForCodexEvent(event) {
 
 function getCodexPaths(options = {}) {
   const homeDir = options.homeDir || os.homedir();
-  const codexDir = options.codexDir || path.join(homeDir, ".codex");
+  const envCodexHome = process.env.CODEX_HOME && String(process.env.CODEX_HOME).trim();
+  const codexDir = options.codexDir || envCodexHome || path.join(homeDir, ".codex");
   return {
     codexDir,
     hooksPath: options.hooksPath || path.join(codexDir, "hooks.json"),
@@ -47,6 +49,65 @@ function buildCodexHookCommand(nodeBin, hookScript, platform = process.platform)
     // PowerShell call operator.
     windowsWrapper: "powershell",
   });
+}
+
+function escapeJsString(value) {
+  return JSON.stringify(String(value));
+}
+
+function buildCodexHookShim(realHookScript) {
+  const normalizedRealHook = String(realHookScript || "").replace(/\\/g, "/");
+  return `#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const { spawn } = require("child_process");
+
+const realHook = ${escapeJsString(normalizedRealHook)};
+const fallbackNoDecision = "{}\\n";
+
+function failOpen() {
+  process.stdout.write(fallbackNoDecision);
+  process.exit(0);
+}
+
+if (!realHook || !fs.existsSync(realHook)) failOpen();
+
+const child = spawn(process.execPath, [realHook], {
+  stdio: ["pipe", "pipe", "pipe"],
+  windowsHide: true,
+});
+
+let stdout = "";
+child.stdout.setEncoding("utf8");
+child.stdout.on("data", (chunk) => { stdout += chunk; });
+child.stderr.resume();
+child.on("error", failOpen);
+child.on("close", (code) => {
+  if (code !== 0) failOpen();
+  process.stdout.write(stdout || fallbackNoDecision);
+  process.exit(0);
+});
+
+process.stdin.pipe(child.stdin);
+`;
+}
+
+function codexShimNameForScript(scriptName) {
+  const safeName = String(scriptName || "codex-hook.js").replace(/[^A-Za-z0-9_.-]/g, "-");
+  return safeName === "codex-hook.js" ? CODEX_HOOK_SHIM_NAME : `clawd-${safeName}`;
+}
+
+function ensureCodexHookShim(codexDir, realHookScript, options = {}) {
+  if (options.skipShim === true) return realHookScript;
+  const shimName = options.shimName || codexShimNameForScript(path.basename(realHookScript));
+  const shimPath = path.join(codexDir, "hooks", shimName);
+  const body = buildCodexHookShim(realHookScript);
+  fs.mkdirSync(path.dirname(shimPath), { recursive: true });
+  let current = null;
+  try { current = fs.readFileSync(shimPath, "utf8"); } catch {}
+  if (current !== body) fs.writeFileSync(shimPath, body, "utf8");
+  return shimPath.replace(/\\/g, "/");
 }
 
 function quotePosixEnvValue(value) {
@@ -325,7 +386,8 @@ function registerCodexCommandHooks(options = {}) {
   });
   if (feature.warning) warnings.push(feature.warning);
 
-  const hookScript = asarUnpackedPath(path.resolve(__dirname, scriptName).replace(/\\/g, "/"));
+  const realHookScript = asarUnpackedPath(path.resolve(__dirname, scriptName).replace(/\\/g, "/"));
+  const hookScript = ensureCodexHookShim(codexDir, realHookScript, options);
   const settings = readJsonIfPresent(hooksPath, "hooks.json");
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   const nodeBin = resolved
@@ -462,9 +524,13 @@ module.exports = {
   DEFAULT_FEATURES_CONFIG,
   CODEX_HOOK_EVENTS,
   CODEX_HOOKS_FEATURE_KEY,
+  CODEX_HOOK_SHIM_NAME,
   LEGACY_CODEX_HOOKS_FEATURE_KEY,
   buildCodexHookCommand,
+  buildCodexHookShim,
+  codexShimNameForScript,
   ensureCodexHooksFeature,
+  ensureCodexHookShim,
   findCodexCommandHook,
   parseTomlTableHeader,
   registerCodexCommandHooks,
