@@ -143,7 +143,7 @@ function getWindowsProcessSnapshot(execFileSync) {
         "-NoProfile", "-NonInteractive", "-Command",
         WINDOWS_PROCESS_SNAPSHOT_SCRIPT,
       ],
-      { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }
+      { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] }
     );
     const trimmed = (out || "").trim();
     if (!trimmed) return { processes: new Map(), foregroundWtHwnd: null };
