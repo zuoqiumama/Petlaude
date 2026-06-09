@@ -20,6 +20,8 @@ const CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS = new Set([
   "event_msg:task_complete",
 ]);
 
+const CODEX_WORKING_LIKE_STATES = new Set(["working", "thinking", "juggling"]);
+
 function createAgentRuntimeMain(options = {}) {
   const now = typeof options.now === "function" ? options.now : Date.now;
   const logWarn = typeof options.logWarn === "function" ? options.logWarn : console.warn;
@@ -51,10 +53,25 @@ function createAgentRuntimeMain(options = {}) {
     return true;
   }
 
+  function shouldAllowCodexJsonlCompletionFallback(sessionId, state, event) {
+    if (event !== "event_msg:task_complete") return false;
+    if (state !== "attention" && state !== "idle") return false;
+    const stateRuntime = getStateRuntime();
+    const sessions = stateRuntime && stateRuntime.sessions;
+    const session = sessions && typeof sessions.get === "function"
+      ? sessions.get(sessionId)
+      : null;
+    if (!session || session.agentId !== "codex") return false;
+    if (session.host || session.headless) return false;
+    return CODEX_WORKING_LIKE_STATES.has(session.state);
+  }
+
   function shouldSuppressCodexLogEvent(sessionId, state, event) {
     if (state === "codex-permission") return hasRecentCodexOfficialHookSession(sessionId);
     if (!CODEX_LOG_EVENTS_COVERED_BY_OFFICIAL_HOOKS.has(event)) return false;
-    return hasRecentCodexOfficialHookSession(sessionId);
+    if (!hasRecentCodexOfficialHookSession(sessionId)) return false;
+    if (shouldAllowCodexJsonlCompletionFallback(sessionId, state, event)) return false;
+    return true;
   }
 
   function updateSessionFromServer(sessionId, state, event, opts = {}) {

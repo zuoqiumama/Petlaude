@@ -948,7 +948,14 @@ function createUsageAnalytics(options = {}) {
 
   function tokenEventKey(event, usage, at) {
     if (typeof event.usageEventId === "string" && event.usageEventId) {
-      return event.usageEventId;
+      const id = event.usageEventId;
+      const txMarker = ":transcript:";
+      const txIdx = id.indexOf(txMarker);
+      if (txIdx >= 0) {
+        const lastColon = id.lastIndexOf(":", txIdx - 1);
+        if (lastColon > 0) return id.substring(0, lastColon) + id.substring(txIdx);
+      }
+      return id;
     }
     return [
       event.host || "",
@@ -1054,12 +1061,15 @@ function createUsageAnalytics(options = {}) {
     last30Aggregate.period = "last30d";
     const hourlyTrend = buildHourlyTrend(buckets, at);
     const monthlyTrend = buildMonthlyTrend(months);
+    const currentMonthKey = localMonthKey(at);
+    const currentMonthEntry = months.get(currentMonthKey) || makeUsageEntry("month", currentMonthKey);
     return {
       generatedAt: at,
       today: serializeDay(projected.get(todayKey) || ensureDay(new Map(), todayKey)),
       days: outDays,
       buckets: hourlyTrend,
       months: monthlyTrend,
+      currentMonth: serializeUsageEntry(currentMonthEntry, "month"),
       trends: {
         hourly: hourlyTrend,
         daily: outDays,

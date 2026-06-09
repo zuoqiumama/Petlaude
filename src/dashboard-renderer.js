@@ -44,6 +44,8 @@ let usageSnapshot = null;
 let usagePeriod = "today";
 let i18nPayload = { lang: "en", translations: {} };
 let activeEdit = null;
+let quotaLimits = {};
+let quotaEditAgent = null;
 
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
@@ -477,6 +479,52 @@ function createAgentUsageList(usage) {
   return list;
 }
 
+function monotoneCubicPath(points) {
+  if (points.length < 2) return "";
+  if (points.length === 2) {
+    return `M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)} L ${points[1].x.toFixed(1)},${points[1].y.toFixed(1)}`;
+  }
+  const n = points.length;
+  const dx = [];
+  const dy = [];
+  const m = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(points[i + 1].x - points[i].x);
+    dy.push(points[i + 1].y - points[i].y);
+    m.push(dy[i] / dx[i]);
+  }
+  const tangent = [m[0]];
+  for (let i = 1; i < n - 1; i++) {
+    if (m[i - 1] * m[i] <= 0) {
+      tangent.push(0);
+    } else {
+      tangent.push((m[i - 1] + m[i]) / 2);
+    }
+  }
+  tangent.push(m[n - 2]);
+  for (let i = 0; i < n - 1; i++) {
+    if (Math.abs(m[i]) < 1e-9) { tangent[i] = 0; tangent[i + 1] = 0; continue; }
+    const alpha = tangent[i] / m[i];
+    const beta = tangent[i + 1] / m[i];
+    const mag = alpha * alpha + beta * beta;
+    if (mag > 9) {
+      const tau = 3 / Math.sqrt(mag);
+      tangent[i] = tau * alpha * m[i];
+      tangent[i + 1] = tau * beta * m[i];
+    }
+  }
+  let d = `M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const seg = dx[i] / 3;
+    const cp1x = points[i].x + seg;
+    const cp1y = points[i].y + tangent[i] * seg;
+    const cp2x = points[i + 1].x - seg;
+    const cp2y = points[i + 1].y - tangent[i + 1] * seg;
+    d += ` C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${points[i + 1].x.toFixed(1)},${points[i + 1].y.toFixed(1)}`;
+  }
+  return d;
+}
+
 function trendRowsForView(config, days) {
   const trends = usageSnapshot && usageSnapshot.trends ? usageSnapshot.trends : {};
   if (config.key === "today" && Array.isArray(trends.hourly)) return trends.hourly;
@@ -645,13 +693,60 @@ function renderUsageChart(rows, config = usagePeriodConfig()) {
     };
   });
   if (maxCost > 0 && costPoints.length > 1) {
-    const d = costPoints.map((pt, index) =>
-      `${index === 0 ? "M" : "L"} ${pt.x.toFixed(1)},${pt.y.toFixed(1)}`
-    ).join(" ");
+    const d = monotoneCubicPath(costPoints);
     svg.appendChild(svgEl("path", { d, class: "chart-line cost-line", fill: "none" }));
   }
 
+  // Hover tooltip overlay
+  const overlay = svgEl("rect", {
+    x: pad.left, y: pad.top, width: plotW, height: plotH,
+    fill: "transparent", style: "cursor:crosshair",
+  });
+  const vLine = svgEl("line", {
+    x1: 0, y1: pad.top, x2: 0, y2: pad.top + plotH,
+    class: "chart-hover-line", style: "display:none",
+  });
+  svg.appendChild(vLine);
+  svg.appendChild(overlay);
+
+  const tooltip = document.createElement("div");
+  tooltip.className = "chart-tooltip";
+  tooltip.style.display = "none";
+
+  overlay.addEventListener("mousemove", (e) => {
+    const svgRect = svg.getBoundingClientRect();
+    const svgX = (e.clientX - svgRect.left) / svgRect.width * width;
+    const rowIdx = Math.round((svgX - pad.left - step / 2) / step);
+    if (rowIdx < 0 || rowIdx >= safeRows.length) { tooltip.style.display = "none"; vLine.style.display = "none"; return; }
+    const row = safeRows[rowIdx];
+    const cx = pad.left + step * rowIdx + step / 2;
+    vLine.setAttribute("x1", cx);
+    vLine.setAttribute("x2", cx);
+    vLine.style.display = "";
+    const tokens = metricTokens(row.totals);
+    const cost = metricCost(row.totals);
+    const label = trendLabel(row);
+    let html = `<strong>${label}</strong>`;
+    segments.forEach((seg) => {
+      const val = segmentValueForRow(row, seg);
+      if (val > 0) html += `<br><span style="color:${seg.color}">●</span> ${seg.label}: ${formatCompactNumber(val)}`;
+    });
+    if (cost > 0) html += `<br><span style="color:#10b981">—</span> Cost: ${formatCost(cost)}`;
+    html += `<br>Total: ${formatCompactNumber(tokens)}`;
+    tooltip.innerHTML = html;
+    tooltip.style.display = "";
+    const pctX = (e.clientX - svgRect.left) / svgRect.width;
+    tooltip.style.left = pctX > 0.65 ? `${(e.clientX - svgRect.left) - tooltip.offsetWidth - 12}px` : `${(e.clientX - svgRect.left) + 12}px`;
+    tooltip.style.top = `${(e.clientY - svgRect.top) - 20}px`;
+  });
+  overlay.addEventListener("mouseleave", () => {
+    tooltip.style.display = "none";
+    vLine.style.display = "none";
+  });
+
+  chart.style.position = "relative";
   chart.appendChild(svg);
+  chart.appendChild(tooltip);
 
   const legend = document.createElement("div");
   legend.className = "usage-legend";
@@ -895,6 +990,399 @@ function createUsageHeatmap(source) {
     panel.appendChild(col);
   });
   return panel;
+}
+
+function getCurrentMonthAgentCosts() {
+  if (!usageSnapshot || !usageSnapshot.currentMonth) return new Map();
+  const agents = Array.isArray(usageSnapshot.currentMonth.agents) ? usageSnapshot.currentMonth.agents : [];
+  const map = new Map();
+  agents.forEach((agent) => {
+    map.set(agent.agentId, {
+      costUsd: Number(agent.costUsd) || Number(agent.total_cost_usd) || 0,
+      tokens: Number(agent.tokens) || Number(agent.total_tokens) || 0,
+    });
+  });
+  return map;
+}
+
+const PLAN_PRESETS = {
+  "claude-code": [
+    { id: "free", label: "Free", monthlyUsd: 0 },
+    { id: "pro", label: "Pro", monthlyUsd: 20 },
+    { id: "max5x", label: "Max 5×", monthlyUsd: 100 },
+    { id: "max20x", label: "Max 20×", monthlyUsd: 200 },
+  ],
+  codex: [
+    { id: "plus", label: "Plus", monthlyUsd: 20 },
+    { id: "pro", label: "Pro", monthlyUsd: 200 },
+  ],
+  "cursor-agent": [
+    { id: "hobby", label: "Hobby", monthlyUsd: 0 },
+    { id: "pro", label: "Pro", monthlyUsd: 20 },
+    { id: "business", label: "Business", monthlyUsd: 40 },
+  ],
+  "copilot-cli": [
+    { id: "free", label: "Free", monthlyUsd: 0 },
+    { id: "individual", label: "Individual", monthlyUsd: 10 },
+    { id: "business", label: "Business", monthlyUsd: 19 },
+    { id: "enterprise", label: "Enterprise", monthlyUsd: 39 },
+  ],
+  "gemini-cli": [
+    { id: "free", label: "Free", monthlyUsd: 0 },
+  ],
+  "kiro-cli": [
+    { id: "free", label: "Free", monthlyUsd: 0 },
+  ],
+};
+
+const SUBSCRIPTION_TYPE_MAP = {
+  free: "free",
+  pro: "pro",
+  max_5x: "max5x",
+  max5x: "max5x",
+  max_20x: "max20x",
+  max20x: "max20x",
+};
+
+let detectedPlans = {};
+
+function detectPlanId(agentId) {
+  const info = detectedPlans[agentId];
+  if (!info || !info.subscriptionType) return null;
+  return SUBSCRIPTION_TYPE_MAP[info.subscriptionType] || info.subscriptionType;
+}
+
+function getPresetsForAgent(agentId) {
+  return PLAN_PRESETS[agentId] || [];
+}
+
+// "×2.5" style value multiplier. One decimal under 10×, whole numbers above
+// (a "×23.4" reads as false precision once you're that far past break-even).
+function quotaMultiplierText(ratio) {
+  if (!Number.isFinite(ratio) || ratio <= 0) return "×0";
+  return ratio >= 10 ? `×${Math.round(ratio)}` : `×${ratio.toFixed(1)}`;
+}
+
+function beginQuotaEdit(agentId) {
+  const existing = quotaLimits[agentId];
+  const presets = getPresetsForAgent(agentId);
+  const detected = detectPlanId(agentId);
+  let defaultPlanId = "custom";
+  let defaultDraft = existing ? String(existing.monthlyLimitUsd) : "";
+
+  if (!existing && detected) {
+    const match = presets.find((p) => p.id === detected);
+    if (match) {
+      defaultPlanId = match.id;
+      defaultDraft = String(match.monthlyUsd);
+    }
+  } else if (!existing && presets.length > 0) {
+    defaultPlanId = presets[0].id;
+    defaultDraft = String(presets[0].monthlyUsd);
+  } else if (existing) {
+    const match = presets.find((p) => p.monthlyUsd === existing.monthlyLimitUsd);
+    if (match) defaultPlanId = match.id;
+  }
+
+  quotaEditAgent = {
+    agentId,
+    planId: defaultPlanId,
+    draft: defaultDraft,
+    saving: false,
+  };
+  render({ force: true });
+}
+
+function cancelQuotaEdit() {
+  quotaEditAgent = null;
+  render({ force: true });
+}
+
+async function commitQuotaEdit() {
+  if (!quotaEditAgent || quotaEditAgent.saving) return;
+  const limit = parseFloat(quotaEditAgent.draft);
+  if (!Number.isFinite(limit) || limit < 0) {
+    cancelQuotaEdit();
+    return;
+  }
+  quotaEditAgent.saving = true;
+  try {
+    const result = await window.dashboardAPI.setQuotaLimit({
+      agentId: quotaEditAgent.agentId,
+      monthlyLimitUsd: limit,
+      enabled: true,
+    });
+    if (result && result.status === "ok") {
+      quotaLimits = { ...quotaLimits, [quotaEditAgent.agentId]: { monthlyLimitUsd: limit, enabled: true } };
+    }
+  } catch (err) {
+    console.warn("quota save failed:", err);
+  }
+  quotaEditAgent = null;
+  render({ force: true });
+}
+
+async function removeQuotaLimit(agentId) {
+  try {
+    const result = await window.dashboardAPI.setQuotaLimit({ agentId, remove: true });
+    if (result && result.status === "ok") {
+      const next = { ...quotaLimits };
+      delete next[agentId];
+      quotaLimits = next;
+      render({ force: true });
+    }
+  } catch (err) {
+    console.warn("quota remove failed:", err);
+  }
+}
+
+function createQuotaCard(agentId, limit, agentCost) {
+  const card = document.createElement("div");
+  card.className = "quota-card";
+
+  const head = document.createElement("div");
+  head.className = "quota-card-head";
+  const isNewEntry = quotaEditAgent && quotaEditAgent.agentId === agentId && !quotaLimits[agentId];
+  if (isNewEntry) {
+    const configured = new Set(Object.keys(quotaLimits));
+    const unconfigured = Object.keys(AGENT_LABELS).filter((id) => !configured.has(id));
+    if (unconfigured.length > 1) {
+      const agentPicker = document.createElement("select");
+      agentPicker.className = "quota-agent-picker";
+      unconfigured.forEach((id) => {
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = agentLabel(id);
+        agentPicker.appendChild(opt);
+      });
+      agentPicker.value = agentId;
+      agentPicker.addEventListener("change", () => {
+        beginQuotaEdit(agentPicker.value);
+      });
+      head.appendChild(agentPicker);
+    } else {
+      head.appendChild(createText("span", "quota-agent-fallback", agentFallback(agentId)));
+      head.appendChild(createText("span", "quota-agent-name", agentLabel(agentId)));
+    }
+  } else {
+    head.appendChild(createText("span", "quota-agent-fallback", agentFallback(agentId)));
+    head.appendChild(createText("span", "quota-agent-name", agentLabel(agentId)));
+  }
+
+  const detected = detectPlanId(agentId);
+  if (detected && !isNewEntry) {
+    const presets = getPresetsForAgent(agentId);
+    const match = presets.find((p) => p.id === detected);
+    if (match) {
+      head.appendChild(createText("span", "quota-detected-badge", `${match.label} · ${t("quotaDetected")}`));
+    }
+  }
+
+  if (!isNewEntry) {
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "quota-remove-btn";
+    removeBtn.textContent = "×";
+    removeBtn.title = t("quotaRemoveLimit");
+    removeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeQuotaLimit(agentId);
+    });
+    head.appendChild(removeBtn);
+  }
+  card.appendChild(head);
+
+  // Subscription value model: `costUsd` is the cache-discounted API-equivalent
+  // value of tokens consumed this month; `planUsd` is the flat price the user
+  // actually pays. A subscription is a good deal precisely *because* the value
+  // consumed can far exceed the price — so we frame crossing the plan price as
+  // "broke even / surplus value", never as an over-budget error.
+  const costUsd = agentCost ? agentCost.costUsd : 0;
+  const planUsd = limit.monthlyLimitUsd;
+  const hasPlan = planUsd > 0;
+  const ratio = hasPlan ? costUsd / planUsd : 0;
+  const brokeEven = hasPlan && costUsd >= planUsd;
+  const fillPercent = hasPlan ? Math.min(100, ratio * 100) : (costUsd > 0 ? 100 : 0);
+
+  // Headline: API-equivalent value consumed this month, with a value-multiplier
+  // pill once the subscription has paid for itself.
+  const valueRow = document.createElement("div");
+  valueRow.className = "quota-value-row";
+  const valueLeft = document.createElement("div");
+  valueLeft.className = "quota-value-left";
+  valueLeft.appendChild(createText("span", "quota-value-amount", formatCost(costUsd)));
+  if (brokeEven) {
+    valueLeft.appendChild(createText("span", "quota-mult-badge", quotaMultiplierText(ratio)));
+  }
+  valueRow.appendChild(valueLeft);
+  valueRow.appendChild(createText("span", "quota-value-label", t("quotaApiValue")));
+  card.appendChild(valueRow);
+
+  const barWrap = document.createElement("div");
+  barWrap.className = "quota-bar-wrap";
+  const barFill = document.createElement("div");
+  barFill.className = `quota-bar-fill ${brokeEven || !hasPlan ? "quota-bar-value" : "quota-bar-building"}`;
+  barFill.style.width = `${fillPercent}%`;
+  barWrap.appendChild(barFill);
+  card.appendChild(barWrap);
+
+  const stats = document.createElement("div");
+  stats.className = "quota-stats";
+  if (hasPlan) {
+    stats.appendChild(createText("span", "quota-plan-price",
+      t("quotaPlanPrice").replace("{price}", formatCost(planUsd))));
+    if (brokeEven) {
+      stats.appendChild(createText("span", "quota-status-good",
+        t("quotaSaved").replace("{amount}", formatCost(costUsd - planUsd))));
+    } else {
+      stats.appendChild(createText("span", "quota-status-pending",
+        t("quotaToBreakeven").replace("{amount}", formatCost(planUsd - costUsd))));
+    }
+  } else {
+    stats.appendChild(createText("span", "quota-plan-price", t("quotaFreePlan")));
+    if (costUsd > 0) {
+      stats.appendChild(createText("span", "quota-status-good",
+        t("quotaSavedFree").replace("{amount}", formatCost(costUsd))));
+    }
+  }
+  card.appendChild(stats);
+
+  if (quotaEditAgent && quotaEditAgent.agentId === agentId) {
+    const editRow = document.createElement("div");
+    editRow.className = "quota-edit-row";
+
+    const presets = getPresetsForAgent(agentId);
+    if (presets.length > 0) {
+      const planSelect = document.createElement("select");
+      planSelect.className = "quota-plan-select";
+      presets.forEach((preset) => {
+        const opt = document.createElement("option");
+        opt.value = preset.id;
+        opt.textContent = `${preset.label} ($${preset.monthlyUsd}/mo)`;
+        planSelect.appendChild(opt);
+      });
+      const customOpt = document.createElement("option");
+      customOpt.value = "custom";
+      customOpt.textContent = t("quotaCustom");
+      planSelect.appendChild(customOpt);
+      planSelect.value = quotaEditAgent.planId || "custom";
+      planSelect.addEventListener("change", () => {
+        if (!quotaEditAgent || quotaEditAgent.agentId !== agentId) return;
+        const selected = planSelect.value;
+        quotaEditAgent.planId = selected;
+        const match = presets.find((p) => p.id === selected);
+        if (match) {
+          quotaEditAgent.draft = String(match.monthlyUsd);
+        }
+        render({ force: true });
+      });
+      editRow.appendChild(planSelect);
+    }
+
+    if (!presets.length || quotaEditAgent.planId === "custom") {
+      const input = document.createElement("input");
+      input.className = "quota-edit-input";
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.placeholder = "$";
+      input.value = quotaEditAgent.draft;
+      input.addEventListener("input", () => {
+        if (quotaEditAgent && quotaEditAgent.agentId === agentId) {
+          quotaEditAgent.draft = input.value;
+        }
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commitQuotaEdit(); }
+        else if (e.key === "Escape") { e.preventDefault(); cancelQuotaEdit(); }
+      });
+      editRow.appendChild(input);
+      requestAnimationFrame(() => {
+        if (quotaEditAgent && quotaEditAgent.agentId === agentId && document.contains(input)) {
+          input.focus();
+          input.select();
+        }
+      });
+    }
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "quota-edit-save";
+    saveBtn.textContent = "OK";
+    saveBtn.addEventListener("click", () => commitQuotaEdit());
+    editRow.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "quota-edit-cancel";
+    cancelBtn.textContent = "×";
+    cancelBtn.addEventListener("click", () => cancelQuotaEdit());
+    editRow.appendChild(cancelBtn);
+
+    card.appendChild(editRow);
+  }
+
+  card.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    beginQuotaEdit(agentId);
+  });
+
+  return card;
+}
+
+function createQuotaSection() {
+  const section = document.createElement("section");
+  section.className = "quota-section";
+
+  const header = document.createElement("div");
+  header.className = "quota-header";
+  header.appendChild(createText("h2", "quota-title", t("quotaTitle")));
+
+  const addWrap = document.createElement("div");
+  addWrap.style.cssText = "display:flex;align-items:center;gap:6px;-webkit-app-region:no-drag";
+
+  const configured = new Set(Object.keys(quotaLimits));
+  const unconfigured = Object.keys(AGENT_LABELS).filter((id) => !configured.has(id));
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "quota-add-btn";
+  addBtn.textContent = `+ ${t("quotaSetLimit")}`;
+  if (unconfigured.length === 0) {
+    addBtn.disabled = true;
+    addBtn.style.opacity = "0.4";
+    addBtn.style.cursor = "default";
+  }
+  addBtn.addEventListener("click", () => {
+    if (unconfigured.length === 0) return;
+    beginQuotaEdit(unconfigured[0]);
+  });
+  addWrap.appendChild(addBtn);
+  header.appendChild(addWrap);
+  section.appendChild(header);
+
+  const agentIds = Object.keys(quotaLimits).filter((id) => quotaLimits[id] && quotaLimits[id].enabled);
+  const agentCosts = getCurrentMonthAgentCosts();
+
+  if (agentIds.length === 0 && !quotaEditAgent) {
+    section.appendChild(createText("div", "quota-empty", t("quotaNoLimits")));
+    return section;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "quota-grid";
+
+  agentIds.forEach((agentId) => {
+    grid.appendChild(createQuotaCard(agentId, quotaLimits[agentId], agentCosts.get(agentId)));
+  });
+
+  if (quotaEditAgent && !agentIds.includes(quotaEditAgent.agentId)) {
+    const newLimit = { monthlyLimitUsd: 0, enabled: true };
+    grid.appendChild(createQuotaCard(quotaEditAgent.agentId, newLimit, agentCosts.get(quotaEditAgent.agentId)));
+  }
+
+  section.appendChild(grid);
+  return section;
 }
 
 function createUsageSection() {
@@ -1238,8 +1726,43 @@ function createEmptyState() {
   return empty;
 }
 
-function render(options = {}) {
+// ── Section hosts ──────────────────────────────────────────────────────────
+// The dashboard is split into three persistent host containers so the live
+// 1-second tick (session timers) only rebuilds the session list. Quota and
+// usage subtrees are left untouched between data refreshes — that's what keeps
+// a hovered quota card from being destroyed/recreated mid-hover (the old
+// "card jumps on hover" bug came from replaceChildren() wiping everything every
+// second while the pointer was over a card).
+let quotaContainer = null;
+let usageContainer = null;
+let sessionsContainer = null;
+
+function ensureContainers() {
+  if (sessionsContainer && sessionsContainer.isConnected) return;
+  quotaContainer = document.createElement("div");
+  quotaContainer.className = "section-host";
+  usageContainer = document.createElement("div");
+  usageContainer.className = "section-host";
+  sessionsContainer = document.createElement("div");
+  sessionsContainer.className = "section-host";
+  contentEl.replaceChildren(quotaContainer, usageContainer, sessionsContainer);
+}
+
+// Quota cards only rebuild on data change / user action — never on the 1s tick.
+function renderQuota(options = {}) {
+  if (quotaEditAgent && !options.force) return;
+  ensureContainers();
+  quotaContainer.replaceChildren(createQuotaSection());
+}
+
+function renderUsage() {
+  ensureContainers();
+  usageContainer.replaceChildren(createUsageSection());
+}
+
+function renderSessions(options = {}) {
   if (activeEdit && !options.force) return;
+  ensureContainers();
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
   titleEl.textContent = t("dashboardWindowTitle");
@@ -1249,11 +1772,10 @@ function render(options = {}) {
   const now = Date.now();
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const fragment = document.createDocumentFragment();
-  fragment.appendChild(createUsageSection());
 
   if (count === 0) {
     fragment.appendChild(createEmptyState());
-    contentEl.replaceChildren(fragment);
+    sessionsContainer.replaceChildren(fragment);
     return;
   }
 
@@ -1276,7 +1798,13 @@ function render(options = {}) {
     fragment.appendChild(section);
   }
 
-  contentEl.replaceChildren(fragment);
+  sessionsContainer.replaceChildren(fragment);
+}
+
+function render(options = {}) {
+  renderQuota(options);
+  renderUsage();
+  renderSessions(options);
 }
 
 async function init() {
@@ -1286,36 +1814,78 @@ async function init() {
   });
   window.dashboardAPI.onSessionSnapshot((nextSnapshot) => {
     snapshot = nextSnapshot || snapshot;
+    // Session pushes are frequent (state changes during active work). Only
+    // touch the session list so quota/usage cards stay stable under the pointer.
     if (activeEdit && !snapshotHasSession(snapshot, activeEdit.sessionId)) {
       activeEdit = null;
-      render({ force: true });
+      renderSessions({ force: true });
       return;
     }
-    render();
+    renderSessions();
   });
   if (typeof window.dashboardAPI.onUsageSnapshot === "function") {
     window.dashboardAPI.onUsageSnapshot((nextUsageSnapshot) => {
       usageSnapshot = nextUsageSnapshot || usageSnapshot;
-      render();
+      // Costs feed the quota cards, so refresh both — but not the session list.
+      renderUsage();
+      renderQuota();
     });
   }
 
-  const [nextI18n, nextSnapshot, nextUsageSnapshot] = await Promise.all([
+  const [nextI18n, nextSnapshot, nextUsageSnapshot, nextQuotaLimits, nextDetected] = await Promise.all([
     window.dashboardAPI.getI18n(),
     window.dashboardAPI.getSnapshot(),
     window.dashboardAPI.getUsageSnapshot ? window.dashboardAPI.getUsageSnapshot() : Promise.resolve(null),
+    window.dashboardAPI.getQuotaLimits ? window.dashboardAPI.getQuotaLimits() : Promise.resolve({}),
+    window.dashboardAPI.detectAgentPlans ? window.dashboardAPI.detectAgentPlans() : Promise.resolve({}),
   ]);
   i18nPayload = nextI18n || i18nPayload;
   snapshot = nextSnapshot || snapshot;
   usageSnapshot = nextUsageSnapshot || usageSnapshot;
+  quotaLimits = nextQuotaLimits || quotaLimits;
+  if (nextDetected) detectedPlans = nextDetected;
+
+  const autoCreated = [];
+  for (const agentId of Object.keys(detectedPlans)) {
+    if (quotaLimits[agentId]) continue;
+    const planId = detectPlanId(agentId);
+    if (!planId) continue;
+    const presets = getPresetsForAgent(agentId);
+    const match = presets.find((p) => p.id === planId);
+    if (match && match.monthlyUsd > 0) {
+      autoCreated.push({ agentId, monthlyLimitUsd: match.monthlyUsd });
+    }
+  }
+  for (const entry of autoCreated) {
+    try {
+      const result = await window.dashboardAPI.setQuotaLimit({
+        agentId: entry.agentId,
+        monthlyLimitUsd: entry.monthlyLimitUsd,
+        enabled: true,
+      });
+      if (result && result.status === "ok") {
+        quotaLimits = { ...quotaLimits, [entry.agentId]: { monthlyLimitUsd: entry.monthlyLimitUsd, enabled: true } };
+      }
+    } catch (_) { /* ignore auto-create failures */ }
+  }
+
   render();
 
-  setInterval(render, 1000);
+  // Live tick: only the session list needs per-second updates (elapsed timers).
+  // Quota + usage stay put so hovering their cards/charts is never interrupted.
+  setInterval(renderSessions, 1000);
   if (window.dashboardAPI.getUsageSnapshot) {
     setInterval(async () => {
       try {
-        usageSnapshot = await window.dashboardAPI.getUsageSnapshot() || usageSnapshot;
-        render();
+        const [nextUsage, nextQuota] = await Promise.all([
+          window.dashboardAPI.getUsageSnapshot(),
+          window.dashboardAPI.getQuotaLimits ? window.dashboardAPI.getQuotaLimits() : Promise.resolve(null),
+        ]);
+        usageSnapshot = nextUsage || usageSnapshot;
+        if (nextQuota) quotaLimits = nextQuota;
+        // Data-only refresh: rebuild usage + quota, leave the session list alone.
+        renderUsage();
+        renderQuota();
       } catch (err) {
         console.warn("usage snapshot refresh threw:", err);
       }

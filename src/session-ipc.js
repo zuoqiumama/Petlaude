@@ -28,10 +28,17 @@ function registerSessionIpc(options = {}) {
     disposers.push(() => ipcMain.removeListener(channel, listener));
   }
 
+  const getQuotaLimits = options.getQuotaLimits || (() => ({}));
+  const setQuotaLimit = options.setQuotaLimit || (() => ({ status: "error", message: "not implemented" }));
+  const detectAgentPlans = options.detectAgentPlans || (() => ({}));
+
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
   handle("dashboard:get-usage-snapshot", () => getUsageSnapshot({ days: 370 }));
   handle("usage-hover:get-snapshot", () => getUsageSnapshot({ days: 1 }));
   handle("dashboard:get-i18n", () => getI18n());
+  handle("dashboard:get-quota-limits", () => getQuotaLimits());
+  handle("dashboard:set-quota-limit", (_event, payload) => setQuotaLimit(payload));
+  handle("dashboard:detect-agent-plans", () => detectAgentPlans());
   on("dashboard:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "dashboard" })
   );

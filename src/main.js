@@ -1027,6 +1027,10 @@ const _permCtx = {
   onPermissionsChanged: () => {
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.notifyPermissionsChanged();
   },
+  onPermissionResolved: (permEntry, options = {}) => {
+    if (!_state || typeof _state.clearPermissionNotification !== "function") return;
+    _state.clearPermissionNotification(permEntry && permEntry.sessionId, options);
+  },
 };
 const _perm = initPermission(_permCtx);
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, maybeStartRemoteApproval, showCodexNotifyBubble, clearCodexNotifyBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, showTaskCompleteBubble, syncPermissionShortcuts, replyOpencodePermission } = _perm;
@@ -2414,6 +2418,47 @@ registerSessionIpc({
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   showDashboard: (options) => showDashboard(options),
+  getQuotaLimits: () => _settingsController.get("quotaLimits") || {},
+  setQuotaLimit: (payload) => {
+    if (!payload || typeof payload !== "object" || !payload.agentId) {
+      return { status: "error", message: "setQuotaLimit requires agentId" };
+    }
+    const current = { ...(_settingsController.get("quotaLimits") || {}) };
+    if (payload.remove) {
+      delete current[payload.agentId];
+    } else {
+      const limit = Number(payload.monthlyLimitUsd);
+      if (!Number.isFinite(limit) || limit < 0) {
+        return { status: "error", message: "invalid monthlyLimitUsd" };
+      }
+      current[payload.agentId] = {
+        monthlyLimitUsd: limit,
+        enabled: payload.enabled !== false,
+      };
+    }
+    const result = _settingsController.applyUpdate("quotaLimits", current);
+    if (result && typeof result.then === "function") {
+      return result.then((r) => r && r.status === "error" ? r : { status: "ok" });
+    }
+    return result && result.status === "error" ? result : { status: "ok" };
+  },
+  detectAgentPlans: () => {
+    const os = require("os");
+    const result = {};
+    try {
+      const credPath = path.join(os.homedir(), ".claude", ".credentials.json");
+      const raw = fs.readFileSync(credPath, "utf8");
+      const cred = JSON.parse(raw);
+      const oauth = cred && cred.claudeAiOauth;
+      if (oauth && oauth.subscriptionType) {
+        result["claude-code"] = {
+          subscriptionType: String(oauth.subscriptionType),
+          rateLimitTier: String(oauth.rateLimitTier || ""),
+        };
+      }
+    } catch (_) { /* credentials not found or unreadable */ }
+    return result;
+  },
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
     if (result && typeof result.then === "function") {

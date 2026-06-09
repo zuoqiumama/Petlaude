@@ -85,6 +85,30 @@ function makePendingReleaseResponse(queue) {
   };
 }
 
+function makeHttpResponse({ statusCode, headers = {}, body = "" }) {
+  return {
+    statusCode,
+    headers,
+    on(event, handler) {
+      if (event === "data" && body) handler(Buffer.from(body));
+      if (event === "end") handler();
+      return this;
+    },
+    resume() {
+      return this;
+    },
+  };
+}
+
+function makeQueuedHttpGet(responses, requests = []) {
+  return (options, cb) => {
+    requests.push(`${options.hostname}${options.path}`);
+    const next = responses.shift();
+    cb(makeHttpResponse(next));
+    return { on() { return this; }, setTimeout() {} };
+  };
+}
+
 describe("updater visual flow", () => {
   beforeEach(() => {
     mock.restoreAll();
@@ -364,6 +388,40 @@ describe("updater visual flow", () => {
     assert.match(bubbles[1].detail, /Operation: Check for Updates/);
     assert.match(bubbles[1].detail, /Reason: network down/);
     assert.match(bubbles[1].detail, /network down/);
+  });
+
+  it("falls back to releases/latest redirect when GitHub API is rate-limited", async () => {
+    const bubbles = [];
+    const requests = [];
+    const ctx = makeCtx({
+      showUpdateBubble: (payload) => bubbles.push(payload),
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      httpsGetImpl: makeQueuedHttpGet([
+        {
+          statusCode: 403,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-limit": "60",
+          },
+          body: JSON.stringify({ message: "API rate limit exceeded" }),
+        },
+        {
+          statusCode: 302,
+          headers: {
+            location: "https://github.com/rullerzhou-afk/clawd-on-desk/releases/tag/v0.5.10",
+          },
+        },
+      ], requests),
+    }));
+
+    await updater.checkForUpdates(true);
+
+    assert.deepStrictEqual(requests, [
+      "api.github.com/repos/rullerzhou-afk/clawd-on-desk/releases/latest",
+      "github.com/rullerzhou-afk/clawd-on-desk/releases/latest",
+    ]);
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "up-to-date"]);
   });
 
   it("shows a real error bubble when packaged download fails after user starts it", async () => {

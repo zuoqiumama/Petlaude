@@ -255,6 +255,11 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizeDismissedUpdateVersions,
   },
+  quotaLimits: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeQuotaLimits,
+  },
 };
 
 const SCHEMA_KEYS = Object.freeze(Object.keys(SCHEMA));
@@ -454,6 +459,22 @@ function normalizeDismissedUpdateVersions(value) {
   const out = {};
   for (const key of Object.keys(value)) {
     if (typeof key === "string" && key && value[key] === true) out[key] = true;
+  }
+  return out;
+}
+
+function normalizeQuotaLimits(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const agentId of Object.keys(value)) {
+    const entry = value[agentId];
+    if (!entry || typeof entry !== "object") continue;
+    const limit = Number(entry.monthlyLimitUsd);
+    if (!Number.isFinite(limit) || limit < 0) continue;
+    out[agentId] = {
+      monthlyLimitUsd: limit,
+      enabled: entry.enabled !== false,
+    };
   }
   return out;
 }

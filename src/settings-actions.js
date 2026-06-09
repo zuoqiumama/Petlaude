@@ -305,6 +305,9 @@ const updateRegistry = {
     return { status: "ok" };
   },
 
+  // ── Quota limits (plain-object validator; schema normalizes per-agent shape) ──
+  quotaLimits: requirePlainObject("quotaLimits"),
+
   // ── Phase 2/3 placeholders — schema reserves these so applyUpdate accepts them ──
   agents: requirePlainObject("agents"),
   themeOverrides: requirePlainObject("themeOverrides"),

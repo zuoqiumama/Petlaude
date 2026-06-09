@@ -3,6 +3,7 @@
 const SESSION_STALE_MS = 600000;
 const WORKING_STALE_MS = 300000;
 const DETACHED_IDLE_STALE_MS = 30000;
+const CODEX_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
 
 // Hard ceiling for sessions held back by requiresCompletionAck — beyond this
 // we delete the session even if the user never clicked anything. Private
@@ -13,18 +14,36 @@ function isWorkingLikeState(state) {
   return state === "working" || state === "juggling" || state === "thinking";
 }
 
+function isLocalCodexWorkingLikeSession(session) {
+  return !!session
+    && session.agentId === "codex"
+    && !session.host
+    && isWorkingLikeState(session.state);
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
-  const sessionStaleMs = Number.isFinite(config.sessionStaleMs)
+  let sessionStaleMs = Number.isFinite(config.sessionStaleMs)
     ? config.sessionStaleMs
     : SESSION_STALE_MS;
-  const workingStaleMs = Number.isFinite(config.workingStaleMs)
+  let workingStaleMs = Number.isFinite(config.workingStaleMs)
     ? config.workingStaleMs
     : WORKING_STALE_MS;
   const detachedIdleStaleMs = Number.isFinite(config.detachedIdleStaleMs)
     ? config.detachedIdleStaleMs
     : DETACHED_IDLE_STALE_MS;
+
+  if (isLocalCodexWorkingLikeSession(session)) {
+    const floor = (
+      Number.isFinite(config.codexLocalWorkingStaleFloorMs)
+      && config.codexLocalWorkingStaleFloorMs > 0
+    )
+      ? config.codexLocalWorkingStaleFloorMs
+      : CODEX_LOCAL_WORKING_STALE_FLOOR_MS;
+    workingStaleMs = Math.max(workingStaleMs, floor);
+    if (sessionStaleMs > 0) sessionStaleMs = Math.max(sessionStaleMs, floor);
+  }
 
   const isProcessAlive = options.isProcessAlive;
 
@@ -104,6 +123,8 @@ module.exports = {
   SESSION_STALE_MS,
   WORKING_STALE_MS,
   DETACHED_IDLE_STALE_MS,
+  CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
+  isLocalCodexWorkingLikeSession,
   getStaleSessionDecision,
 };

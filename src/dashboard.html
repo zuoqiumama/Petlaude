@@ -195,6 +195,11 @@ h1 {
   min-height: 0;
   padding: 20px 24px 24px;
 }
+/* Wrapper hosts let the quota / usage / sessions subtrees re-render
+   independently; display:contents keeps the visual layout identical to a
+   flat child list. */
+.section-host { display: contents; }
+
 .content::-webkit-scrollbar { width: 6px; }
 .content::-webkit-scrollbar-track { background: transparent; }
 .content::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
@@ -612,6 +617,29 @@ h1 {
   filter: drop-shadow(0 1px 3px rgba(16, 185, 129, 0.22));
 }
 
+.chart-hover-line {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.chart-tooltip {
+  position: absolute;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 20;
+}
+
 .chart-fill-session { fill: rgba(var(--line-session-rgb), 0.08); }
 .chart-fill-active { fill: rgba(var(--line-active-rgb), 0.08); }
 
@@ -925,6 +953,334 @@ h1 {
 .usage-depth-chart > span.level-2 { background: rgba(16, 185, 129, 0.52); }
 .usage-depth-chart > span.level-3 { background: rgba(16, 185, 129, 0.7); }
 .usage-depth-chart > span.level-4 { background: rgba(16, 185, 129, 0.9); }
+
+/* ── Quota Section ── */
+.quota-section {
+  margin: 0 0 24px;
+}
+
+.quota-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  margin-bottom: 14px;
+}
+
+.quota-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.quota-card {
+  position: relative;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+  transition: transform 0.25s ease-out, box-shadow 0.25s ease-out, border-color 0.25s ease-out;
+  cursor: default;
+}
+
+.quota-card:hover {
+  box-shadow: var(--card-shadow-hover);
+  border-color: rgba(28, 25, 23, 0.14);
+}
+
+.quota-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.quota-agent-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: contain;
+  background: var(--surface-alt);
+  flex-shrink: 0;
+}
+
+.quota-agent-fallback {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.quota-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  flex: 1;
+}
+
+.quota-remove-btn {
+  min-width: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--subtle);
+  font-size: 14px;
+  line-height: 18px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.quota-card:hover .quota-remove-btn { opacity: 1; }
+.quota-remove-btn:hover { color: var(--text); background: var(--surface-alt); }
+
+.quota-bar-wrap {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--row-border);
+}
+
+.quota-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.4s ease-out;
+}
+
+.quota-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-remaining {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.quota-remaining.quota-exceeded-text { color: #dc2626; }
+
+/* ── Subscription value framing ── */
+.quota-value-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.quota-value-left {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.quota-value-amount {
+  font-size: 22px;
+  font-weight: 750;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.quota-value-label {
+  font-size: 10px;
+  color: var(--subtle);
+  text-align: right;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.quota-bar-fill.quota-bar-building { background: var(--accent); }
+.quota-bar-fill.quota-bar-value {
+  background: linear-gradient(90deg, #16a34a, #22c55e);
+}
+
+.quota-mult-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(22, 163, 74, 0.14);
+  color: #16a34a;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.quota-plan-price { color: var(--muted); }
+.quota-status-good { color: #16a34a; font-weight: 700; }
+.quota-status-pending { color: var(--subtle); }
+
+.quota-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.quota-edit-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  outline: none;
+  background: var(--surface-alt);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.quota-edit-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(120, 113, 108, 0.16);
+}
+
+.quota-edit-save {
+  min-width: 48px;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quota-edit-cancel {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.quota-edit-cancel:hover { color: var(--text); border-color: var(--accent); }
+
+.quota-plan-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  outline: none;
+  background: var(--surface-alt);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.quota-detected-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(22, 163, 74, 0.12);
+  color: #16a34a;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.quota-agent-picker {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quota-add-btn {
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.quota-add-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: transparent;
+  transform: none;
+  box-shadow: none;
+}
+
+.quota-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .quota-card:hover { border-color: rgba(250, 250, 248, 0.14); }
+  .quota-edit-input:focus { box-shadow: 0 0 0 3px rgba(120, 113, 108, 0.24); }
+}
+
+@media (max-width: 480px) {
+  .quota-grid { grid-template-columns: 1fr; }
+}
 
 /* ── Session Groups ── */
 .group { margin: 0 0 24px; }

@@ -914,6 +914,79 @@ describe("updateSession()", () => {
     });
   });
 
+  it("Codex transient PermissionRequest preserves focus without keeping a waiting tail", () => {
+    update(api, { id: "codex:native", state: "working", event: "PreToolUse", agentId: "codex" });
+
+    api.updateSession("codex:native", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 456,
+      transientPermissionEvent: true,
+    });
+
+    const session = api.sessions.get("codex:native");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.sourcePid, 456);
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
+    assert.ok(!session.recentEvents.some((entry) => entry.event === "PermissionRequest"));
+  });
+
+  it("Codex PermissionRequest without an existing session stores idle metadata state", () => {
+    api.updateSession("codex:new-perm", "notification", "PermissionRequest", {
+      agentId: "codex",
+      sourcePid: 456,
+    });
+
+    const session = api.sessions.get("codex:new-perm");
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.sourcePid, 456);
+    assert.deepStrictEqual(session.recentEvents.at(-1), {
+      event: "PermissionRequest",
+      state: "idle",
+      at: session.recentEvents.at(-1).at,
+    });
+  });
+
+  it("clearPermissionNotification removes a resolved PermissionRequest tail event", () => {
+    update(api, { id: "perm-active", state: "working", event: "PreToolUse", agentId: "codex" });
+    update(api, {
+      id: "perm-active",
+      state: "notification",
+      event: "PermissionRequest",
+      agentId: "codex",
+      sourcePid: 456,
+    });
+
+    assert.strictEqual(api.sessions.get("perm-active").recentEvents.at(-1).event, "PermissionRequest");
+
+    assert.strictEqual(api.clearPermissionNotification("perm-active"), true);
+
+    const session = api.sessions.get("perm-active");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PreToolUse");
+    assert.strictEqual(api.resolveDisplayState(), "working");
+  });
+
+  it("clearPermissionNotification keeps the tail while another permission is pending", () => {
+    api.sessions.set("codex:stacked", rawSession("working", {
+      agentId: "codex",
+      sourcePid: 456,
+      pidReachable: true,
+      recentEvents: [
+        { event: "PreToolUse", state: "working", at: Date.now() - 2000 },
+        { event: "PermissionRequest", state: "working", at: Date.now() - 1000 },
+      ],
+    }));
+
+    assert.strictEqual(
+      api.clearPermissionNotification("codex:stacked", { hasPendingForSession: true }),
+      false
+    );
+
+    const session = api.sessions.get("codex:stacked");
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.recentEvents.at(-1).event, "PermissionRequest");
+  });
+
   it("keeps wtHwnd sticky when later events do not provide one", () => {
     update(api, {
       id: "s1",

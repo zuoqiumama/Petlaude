@@ -18,6 +18,7 @@ const {
 } = require("./state-visual-resolver");
 const {
   getStaleSessionDecision,
+  isWorkingLikeState,
 } = require("./state-stale-cleanup");
 const {
   createHitboxRuntime,
@@ -876,6 +877,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     muteNotificationSound = false,
     tokenUsage = null,
     usageEventId = null,
+    transientPermissionEvent = false,
   } = opts;
   if (startupRecoveryActive) {
     startupRecoveryActive = false;
@@ -936,8 +938,10 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
       const srcSessionTitle = normalizeTitle(sessionTitle) || (existing && existing.sessionTitle) || null;
-      const storedState = existing && existing.state ? existing.state : "notification";
-      const recentEvents = pushRecentEvent(existing, storedState, event);
+      const storedState = existing && existing.state ? existing.state : "idle";
+      const recentEvents = transientPermissionEvent === true
+        ? (Array.isArray(existing && existing.recentEvents) ? existing.recentEvents.slice() : [])
+        : pushRecentEvent(existing, storedState, event);
       sessions.set(sessionId, {
         state: storedState,
         updatedAt: Date.now(),
@@ -1374,6 +1378,51 @@ function dismissSession(sessionId) {
   return true;
 }
 
+function takeTrailingPermissionRequest(session) {
+  const events = Array.isArray(session && session.recentEvents)
+    ? session.recentEvents
+    : null;
+  if (!events || events.length === 0) return null;
+  const last = events[events.length - 1];
+  if (!last || last.event !== "PermissionRequest") return null;
+  session.recentEvents = events.slice(0, -1);
+  return last;
+}
+
+function clearPermissionNotification(sessionId, options = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id || options.hasPendingForSession === true) return false;
+
+  let changed = false;
+  const session = sessions.get(id);
+  if (session) {
+    const trailingPermission = takeTrailingPermissionRequest(session);
+    if (session.state === "notification") {
+      session.state = "idle";
+      session.displayHint = null;
+      session.resumeState = null;
+      changed = true;
+    } else if (
+      session.state === "idle"
+      && trailingPermission
+      && isWorkingLikeState(trailingPermission.state)
+    ) {
+      session.state = trailingPermission.state;
+      changed = true;
+    }
+    if (trailingPermission || changed) {
+      session.updatedAt = Date.now();
+      changed = true;
+    }
+  }
+
+  if (!changed) return false;
+  const resolved = resolveDisplayState();
+  setState(resolved, getSvgOverride(resolved));
+  emitSessionSnapshot({ force: true });
+  return true;
+}
+
 function clearSessionsByAgent(agentId) {
   if (!agentId) return 0;
   let removed = 0;
@@ -1717,6 +1766,7 @@ return {
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
   dismissSession,
+  clearPermissionNotification,
   ackSessionCompletion,
   clearSessionsByAgent,
   disposeAllKimiPermissionState,

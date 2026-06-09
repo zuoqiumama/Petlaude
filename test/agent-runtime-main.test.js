@@ -240,4 +240,97 @@ describe("agent-runtime-main", () => {
       ["setState", "idle", "svg:idle"],
     ]);
   });
+
+  it("rescues a stuck local Codex turn with JSONL task_complete while suppressing other covered events", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+
+    runtime.markCodexOfficialHookSession("codex:s1");
+    sessions.set("codex:s1", { agentId: "codex", state: "working" });
+
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "attention", "event_msg:task_complete"),
+      false
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "idle", "event_msg:task_complete"),
+      false
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "working", "event_msg:task_started"),
+      true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:s1", "attention", "event_msg:exec_command_end"),
+      true
+    );
+  });
+
+  it("does not apply the JSONL completion fallback to remote or headless Codex sessions", () => {
+    const sessions = new Map();
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      getStateRuntime: () => ({ sessions }),
+    });
+
+    runtime.markCodexOfficialHookSession("codex:remote");
+    runtime.markCodexOfficialHookSession("codex:headless");
+    sessions.set("codex:remote", { agentId: "codex", state: "working", host: "ssh:example" });
+    sessions.set("codex:headless", { agentId: "codex", state: "working", headless: true });
+
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:remote", "idle", "event_msg:task_complete"),
+      true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "attention", "event_msg:task_complete"),
+      true
+    );
+  });
+
+  it("lets the JSONL monitor close a stuck local Codex turn, then suppresses the duplicate", () => {
+    const instances = [];
+    const calls = [];
+    const sessions = new Map();
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({ sessions }),
+      updateSession: (...args) => calls.push(["update", ...args]),
+      clearCodexNotifyBubbles: (...args) => calls.push(["clear", ...args]),
+    });
+
+    const monitor = runtime.startCodexLogMonitor();
+    runtime.markCodexOfficialHookSession("codex:s1");
+    sessions.set("codex:s1", { agentId: "codex", state: "working" });
+
+    monitor.emit("codex:s1", "idle", "event_msg:task_complete", {
+      cwd: "D:\\repo",
+      sessionTitle: "Codex turn",
+    });
+
+    assert.deepStrictEqual(calls, [
+      ["clear", "codex:s1", "codex-state-transition:idle"],
+      ["update", "codex:s1", "idle", "event_msg:task_complete", {
+        cwd: "D:\\repo",
+        agentId: "codex",
+        sessionTitle: "Codex turn",
+        headless: false,
+      }],
+    ]);
+
+    calls.length = 0;
+    sessions.set("codex:s1", { agentId: "codex", state: "idle" });
+    monitor.emit("codex:s1", "idle", "event_msg:task_complete", {
+      cwd: "D:\\repo",
+      sessionTitle: "Codex turn",
+    });
+    assert.deepStrictEqual(calls, []);
+  });
 });
