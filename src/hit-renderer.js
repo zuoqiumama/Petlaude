@@ -291,7 +291,9 @@ function handleClick(clientX) {
       const dir = firstClickDir;
       clickCount = 0;
       firstClickDir = null;
-      if (count === 2 && petClickActionEnabled && typeof window.hitAPI.launchClickAction === "function") {
+      // Match the legacy branch: the double-click action launches for 2-3
+      // clicks (the >=4 flail tier never launched it).
+      if (count >= 2 && count < 4 && petClickActionEnabled && typeof window.hitAPI.launchClickAction === "function") {
         window.hitAPI.launchClickAction();
       }
       if (!canPlayReactionNow()) return;

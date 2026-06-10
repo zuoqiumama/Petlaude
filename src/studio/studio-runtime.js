@@ -120,16 +120,42 @@ function createStudioRuntime(options = {}) {
     } catch { /* progress must never break the pipeline */ }
   }
 
+  // Reference downscale: a raw reference can be up to 10MB; embedding that as
+  // base64 bloats the API payload and adds nothing at 512-cell scale. When the
+  // processor supports prepareReference, shrink it to <=768px first.
+  let _refDataUrlCache = null;
+  async function getReferenceDataUrl() {
+    if (_refDataUrlCache) return _refDataUrlCache;
+    const raw = fileToDataUrl(referencePath);
+    if (typeof processor.prepareReference === "function") {
+      try {
+        const prepared = await processor.prepareReference({ dataUrl: raw, maxSize: 768 });
+        if (prepared && prepared.dataUrl) {
+          _refDataUrlCache = prepared.dataUrl;
+          return _refDataUrlCache;
+        }
+      } catch { /* fall back to the raw reference */ }
+    }
+    _refDataUrlCache = raw;
+    return raw;
+  }
+
   async function generateAction(actionId) {
     const action = getAction(actionId);
     if (!action) throw new Error(`unknown action: ${actionId}`);
     emit(actionId, "start");
 
-    // 1. Layout guide for this action's grid (rasterized in the offscreen window).
+    // 1. Layout guide for this action's grid (rasterized in the offscreen
+    // window). Guide cells must share the OUTPUT size's aspect — a square
+    // guide for a 1536x1024 output would teach the model the wrong slots.
+    const size = pickGenerationSize(action.grid);
+    const [outW, outH] = size.split("x").map(Number);
     const guide = await processor.makeGuide({
       cols: action.grid.cols,
       rows: action.grid.rows,
       cell: CELL_SIZE,
+      cellW: Math.round(outW / action.grid.cols),
+      cellH: Math.round(outH / action.grid.rows),
       safe: GUIDE_SAFE_MARGIN,
       _actionId: actionId,
     });
@@ -140,8 +166,8 @@ function createStudioRuntime(options = {}) {
       apiKey: config.apiKey,
       model: config.model,
       prompt: buildPrompt(action, chroma),
-      images: [fileToDataUrl(referencePath), guide.dataUrl],
-      size: pickGenerationSize(action.grid),
+      images: [await getReferenceDataUrl(), guide.dataUrl],
+      size,
       _actionId: actionId,
     });
     emit(actionId, "generated");

@@ -164,6 +164,43 @@ describe("studio-runtime generateAction", () => {
   });
 });
 
+describe("studio-runtime reference + guide geometry", () => {
+  it("uses processor.prepareReference (downscaled) when available", async () => {
+    const h = makeHarness(); // base harness lacks prepareReference — build a runtime that has it
+    const prepared = [];
+    const { createStudioRuntime } = require("../src/studio/studio-runtime");
+    const runtime = createStudioRuntime({
+      themeDir: h.themeDir,
+      referencePath: h.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async (params) => { prepared.push(params.images[0]); return "https://img/s.png"; },
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          prepareReference: async () => ({ dataUrl: "data:image/png;base64,SMALLREF" }),
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => ({
+            frames: fakeFrames(p.cols * p.rows),
+            report: [],
+          }),
+        },
+      },
+    });
+    await runtime.generateAction("yawn");
+    assert.strictEqual(prepared[0], "data:image/png;base64,SMALLREF");
+  });
+
+  it("guide cells match the output size aspect (3x1 grid → 512x1024 cells)", async () => {
+    const h = makeHarness();
+    await h.runtime.generateAction("curious"); // 3x1 grid → 1536x1024 output
+    const guide = h.calls.guides[0];
+    assert.strictEqual(guide.cellW, 512);
+    assert.strictEqual(guide.cellH, 1024);
+    const params = h.calls.client[0];
+    assert.strictEqual(params.size, "1536x1024");
+  });
+});
+
 describe("studio-runtime generateAll", () => {
   it("continues past failures and returns a summary", async () => {
     const h = makeHarness({ failActions: ["snack", "dizzy"] });

@@ -47,10 +47,30 @@ async function processStrip(payload) {
 
 function makeGuide(payload) {
   const { cols, rows, cell, safe = 26 } = payload;
-  cv.width = cols * cell;
-  cv.height = rows * cell;
-  window.ClawdLayoutGuide.drawLayoutGuide(ctx, { cols, rows, cellW: cell, cellH: cell, safeX: safe, safeY: safe });
+  // Guide cells may be non-square (cellW/cellH) so they match the output
+  // size's aspect; `cell` remains the square fallback.
+  const cellW = payload.cellW || cell;
+  const cellH = payload.cellH || cell;
+  cv.width = cols * cellW;
+  cv.height = rows * cellH;
+  window.ClawdLayoutGuide.drawLayoutGuide(ctx, { cols, rows, cellW, cellH, safeX: safe, safeY: safe });
   return { dataUrl: cv.toDataURL("image/png") };
+}
+
+// Downscale a reference image so the API payload stays small (longest side
+// <= maxSize). Bilinear smoothing is fine here — this is the model's identity
+// reference, not a pixel-perfect asset.
+async function prepareReference(payload) {
+  const { dataUrl, maxSize = 768 } = payload;
+  const im = await decode(dataUrl);
+  const scale = Math.min(1, maxSize / Math.max(im.naturalWidth, im.naturalHeight));
+  const w = Math.max(1, Math.round(im.naturalWidth * scale));
+  const h = Math.max(1, Math.round(im.naturalHeight * scale));
+  cv.width = w;
+  cv.height = h;
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(im, 0, 0, w, h);
+  return { dataUrl: cv.toDataURL("image/png"), width: w, height: h };
 }
 
 window.offscreenAPI.onJob(async (job) => {
@@ -59,6 +79,7 @@ window.offscreenAPI.onJob(async (job) => {
     let data;
     if (channel === "processStrip") data = await processStrip(payload);
     else if (channel === "makeGuide") data = makeGuide(payload);
+    else if (channel === "prepareReference") data = await prepareReference(payload);
     else throw new Error(`unknown channel: ${channel}`);
     window.offscreenAPI.result(id, data);
   } catch (err) {

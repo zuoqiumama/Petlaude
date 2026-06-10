@@ -1287,7 +1287,10 @@ function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHud
 
 // ── Main tick — delegated to src/tick.js ──
 // Idle-life "wander": shift the pet window sideways by dx, clamped to the work
-// area. Guarded so it only runs while idle and never during mini/drag.
+// area. Guarded so it only runs while idle and never during mini/drag. The
+// move is tweened (ease-out, ~60fps) so the wander reads as walking instead of
+// a teleport; any drag/state change aborts mid-flight.
+let _wanderTimer = null;
 function moveWindowBy(dx) {
   if (_mini.getMiniMode() || petWindowRuntime.isDragLocked()) return;
   if (_state.getCurrentState() !== "idle") return;
@@ -1295,8 +1298,26 @@ function moveWindowBy(dx) {
   if (!bounds) return;
   const wa = getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
   const target = computeWanderTarget(bounds, wa, dx);
-  applyPetWindowBounds({ ...bounds, x: target.x, y: target.y });
-  syncHitWin();
+  if (target.x === bounds.x) return;
+
+  if (_wanderTimer) { clearTimeout(_wanderTimer); _wanderTimer = null; }
+  const startX = bounds.x;
+  const startTime = Date.now();
+  const durationMs = 1400; // matches the wander walk-cycle pacing
+  const step = () => {
+    _wanderTimer = null;
+    if (_mini.getMiniMode() || petWindowRuntime.isDragLocked()
+      || _state.getCurrentState() !== "idle") return; // abort: someone else owns the window now
+    const t = Math.min(1, (Date.now() - startTime) / durationMs);
+    const eased = t * (2 - t);
+    const x = Math.round(startX + (target.x - startX) * eased);
+    const current = getPetWindowBounds();
+    if (!current) return;
+    applyPetWindowBounds({ ...current, x });
+    syncHitWin();
+    if (t < 1) _wanderTimer = setTimeout(step, 16);
+  };
+  step();
 }
 
 // ── Context-Aware Companion: reaction engine ──
@@ -1308,11 +1329,19 @@ let _contextEnginePrev;
 let _contextReactionUntil = 0;
 let _contextLoopTimer = null;
 
+// getSnapshot() builds full trend/heatmap aggregates — too heavy for a 2.5s
+// loop. Daily tokens only move when sessions are active, so a 30s cache is
+// plenty for the 100k-milestone check.
+let _dailyTokensCache = { value: 0, at: 0 };
 function getDailyTokens() {
+  if (Date.now() - _dailyTokensCache.at < 30000) return _dailyTokensCache.value;
   try {
     const snap = getUsageSnapshot({ days: 1 });
-    return snap && snap.today ? Number(snap.today.total_tokens) || 0 : 0;
+    const value = snap && snap.today ? Number(snap.today.total_tokens) || 0 : 0;
+    _dailyTokensCache = { value, at: Date.now() };
+    return value;
   } catch {
+    _dailyTokensCache = { value: 0, at: Date.now() };
     return 0;
   }
 }
@@ -1331,7 +1360,7 @@ function feedContextEngine() {
 
 function drainContextReaction() {
   if (Date.now() < _contextReactionUntil) return;
-  if (doNotDisturb || _mini.getMiniMode()) return;
+  if (doNotDisturb || _mini.getMiniMode() || petWindowRuntime.isDragLocked()) return;
   if (_state.getCurrentState() !== "idle") return;
   if (_tickCtx && _tickCtx._idleLifeActive) return;
   const theme = getActiveTheme();
@@ -1342,8 +1371,10 @@ function drainContextReaction() {
   const entry = map[req.actionId];
   if (!entry || !entry.file) return;
   const duration = Number(entry.duration) || 3000;
+  // Same channel as click reactions; the renderer's playReaction self-restores
+  // after `duration` via resume-from-reaction. The hit window's currentSvg is
+  // deliberately NOT synced — click reactions don't sync it either.
   sendToRenderer("play-click-reaction", entry.file, duration);
-  sendToHitWin("hit-state-sync", { currentSvg: entry.file });
   _contextReactionUntil = Date.now() + duration + 300;
 }
 
