@@ -96,16 +96,20 @@ function computeWanderTarget(bounds, workArea, dx) {
   };
 }
 
-// ── tick.js integration helper ───────────────────────────────────────────────
+// ── tick.js integration helpers ──────────────────────────────────────────────
 // Decides + triggers an idle-life behavior. Returns the played behavior or null.
 // Conflict-safety: bails unless idle, not DND, not mini. Renders via the idle
-// state-change path and arms a return-to-idle timer (caller owns the timer ref
-// through ctx so a state change can clear it).
+// state-change path (currentState stays "idle"; only the SVG changes, so eye
+// tracking naturally pauses because currentSvg !== idle-follow). Arms a
+// self-managed return timer stored on ctx so cancelIdleLife() can clear it.
 function maybePlayIdleLife(ctx, idleElapsedMs, scheduler) {
   if (!ctx || !scheduler) return null;
   if (ctx.doNotDisturb || ctx.miniMode || ctx.currentState !== "idle") return null;
+  if (ctx._idleLifeActive) return null; // one at a time
   const behavior = scheduler.pick(idleElapsedMs);
   if (!behavior) return null;
+
+  const setTimer = typeof ctx.setTimeout === "function" ? ctx.setTimeout : setTimeout;
 
   if (typeof ctx.sendToRenderer === "function") {
     ctx.sendToRenderer("state-change", "idle", behavior.file);
@@ -113,14 +117,55 @@ function maybePlayIdleLife(ctx, idleElapsedMs, scheduler) {
   if (typeof ctx.sendToHitWin === "function") {
     ctx.sendToHitWin("hit-state-sync", { currentSvg: behavior.file });
   }
-  // Optional wander window move.
+  // Optional wander window move (Task 2.3 supplies ctx.moveWindowBy).
   if (behavior.windowMove && typeof ctx.moveWindowBy === "function") {
     const [lo, hi] = behavior.windowMove.dxRange || [0, 0];
-    const mag = lo + (hi - lo) * (typeof ctx.random === "function" ? ctx.random() : Math.random());
-    const dir = (typeof ctx.random === "function" ? ctx.random() : Math.random()) < 0.5 ? -1 : 1;
+    const rng = typeof ctx.random === "function" ? ctx.random : Math.random;
+    const mag = lo + (hi - lo) * rng();
+    const dir = rng() < 0.5 ? -1 : 1;
     ctx.moveWindowBy(Math.round(mag) * dir);
   }
+
+  ctx._idleLifeActive = true;
+  const dur = Number.isFinite(behavior.durationMs) && behavior.durationMs > 0 ? behavior.durationMs : 3000;
+  ctx._idleLifeReturnTimer = setTimer(() => {
+    ctx._idleLifeReturnTimer = null;
+    ctx._idleLifeActive = false;
+    // Only restore if we're still idle and not mid-state-change.
+    if (ctx.currentState === "idle") {
+      const follow = ctx.svgIdleFollow;
+      if (follow && typeof ctx.sendToRenderer === "function") {
+        ctx.sendToRenderer("state-change", "idle", follow);
+        if (typeof ctx.sendToHitWin === "function") {
+          ctx.sendToHitWin("hit-state-sync", { currentSvg: follow });
+        }
+      }
+      ctx.forceEyeResend = true;
+    }
+  }, dur);
   return behavior;
+}
+
+// Cancel an in-flight idle-life behavior and restore the idle-follow SVG.
+// Called by tick.js when the mouse moves, the state changes, or idle exits.
+function cancelIdleLife(ctx, options = {}) {
+  if (!ctx) return;
+  const clearTimer = typeof ctx.clearTimeout === "function" ? ctx.clearTimeout : clearTimeout;
+  if (ctx._idleLifeReturnTimer) {
+    clearTimer(ctx._idleLifeReturnTimer);
+    ctx._idleLifeReturnTimer = null;
+  }
+  const wasActive = ctx._idleLifeActive;
+  ctx._idleLifeActive = false;
+  if (wasActive && options.restore !== false && ctx.currentState === "idle") {
+    const follow = ctx.svgIdleFollow;
+    if (follow && typeof ctx.sendToRenderer === "function") {
+      ctx.sendToRenderer("state-change", "idle", follow);
+      if (typeof ctx.sendToHitWin === "function") {
+        ctx.sendToHitWin("hit-state-sync", { currentSvg: follow });
+      }
+    }
+  }
 }
 
 module.exports = {
@@ -128,5 +173,6 @@ module.exports = {
   normalizeBehaviors,
   computeWanderTarget,
   maybePlayIdleLife,
+  cancelIdleLife,
   hourInRange,
 };

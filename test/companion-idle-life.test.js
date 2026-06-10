@@ -7,7 +7,33 @@ const {
   createIdleLifeScheduler,
   normalizeBehaviors,
   computeWanderTarget,
+  maybePlayIdleLife,
+  cancelIdleLife,
 } = require("../src/companion/idle-life");
+
+function fakeCtx(overrides = {}) {
+  const sends = [];
+  const timers = [];
+  return {
+    currentState: "idle",
+    doNotDisturb: false,
+    miniMode: false,
+    svgIdleFollow: "idle-follow.svg",
+    forceEyeResend: false,
+    sends,
+    timers,
+    sendToRenderer: (...a) => sends.push(a),
+    sendToHitWin: () => {},
+    setTimeout: (fn, ms) => { const id = { fn, ms }; timers.push(id); return id; },
+    clearTimeout: (id) => { const i = timers.indexOf(id); if (i >= 0) timers.splice(i, 1); },
+    ...overrides,
+  };
+}
+
+function oneShotScheduler(behavior) {
+  let used = false;
+  return { pick: () => (used ? null : ((used = true), behavior)), reset: () => { used = false; } };
+}
 
 describe("idle-life scheduler", () => {
   function fixture() {
@@ -77,6 +103,44 @@ describe("normalizeBehaviors", () => {
     assert.deepStrictEqual(out[0].hourRange, [23, 6]);
     assert.strictEqual(out[0].durationMs, 3200);
     assert.strictEqual(out[1].hover, true);
+  });
+});
+
+describe("maybePlayIdleLife", () => {
+  const behavior = { id: "yawn", file: "yawn.svg", durationMs: 3200 };
+
+  it("plays the behavior svg via the idle state-change path and arms a return", () => {
+    const ctx = fakeCtx();
+    const played = maybePlayIdleLife(ctx, 130000, oneShotScheduler(behavior));
+    assert.strictEqual(played.id, "yawn");
+    assert.deepStrictEqual(ctx.sends[0], ["state-change", "idle", "yawn.svg"]);
+    assert.strictEqual(ctx.timers.length, 1, "return timer armed");
+    assert.strictEqual(ctx.timers[0].ms, 3200);
+    // fire the return timer
+    ctx.timers[0].fn();
+    assert.deepStrictEqual(ctx.sends.at(-1), ["state-change", "idle", "idle-follow.svg"]);
+    assert.strictEqual(ctx.forceEyeResend, true);
+  });
+
+  it("does nothing when DND, mini, or not idle", () => {
+    assert.strictEqual(maybePlayIdleLife(fakeCtx({ doNotDisturb: true }), 130000, oneShotScheduler(behavior)), null);
+    assert.strictEqual(maybePlayIdleLife(fakeCtx({ miniMode: true }), 130000, oneShotScheduler(behavior)), null);
+    assert.strictEqual(maybePlayIdleLife(fakeCtx({ currentState: "working" }), 130000, oneShotScheduler(behavior)), null);
+  });
+
+  it("will not start a second behavior while one is active", () => {
+    const ctx = fakeCtx();
+    assert.ok(maybePlayIdleLife(ctx, 130000, { pick: () => behavior }));
+    assert.strictEqual(maybePlayIdleLife(ctx, 130000, { pick: () => behavior }), null);
+  });
+
+  it("cancelIdleLife clears the timer and restores idle-follow", () => {
+    const ctx = fakeCtx();
+    maybePlayIdleLife(ctx, 130000, oneShotScheduler(behavior));
+    cancelIdleLife(ctx);
+    assert.strictEqual(ctx._idleLifeActive, false);
+    assert.strictEqual(ctx.timers.length, 0, "timer cleared");
+    assert.deepStrictEqual(ctx.sends.at(-1), ["state-change", "idle", "idle-follow.svg"]);
   });
 });
 

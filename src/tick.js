@@ -2,6 +2,12 @@
 // Extracted from main.js L527-689
 
 const { screen } = require("electron");
+const {
+  createIdleLifeScheduler,
+  normalizeBehaviors,
+  maybePlayIdleLife,
+  cancelIdleLife,
+} = require("./companion/idle-life");
 
 module.exports = function initTick(ctx) {
 
@@ -40,6 +46,7 @@ let MOUSE_SLEEP_TIMEOUT = 0;
 let SVG_IDLE_FOLLOW = null;
 let IDLE_ANIMS = [];
 let SLEEP_MODE = "full";
+let idleLifeScheduler = null; // Context-Aware Companion: idle-life behaviors
 
 function refreshTheme() {
   theme = ctx.theme;
@@ -48,6 +55,21 @@ function refreshTheme() {
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   IDLE_ANIMS = (theme.idleAnimations || []).map(a => ({ svg: a.file, duration: a.duration }));
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
+  // Expose the idle-follow svg so idle-life helpers can restore it on return.
+  ctx.svgIdleFollow = SVG_IDLE_FOLLOW;
+  // Build the idle-life scheduler from the (optional) theme.idleLife behaviors.
+  // Missing/empty ⇒ null ⇒ idle-life is inert (behavior identical to today).
+  const behaviors = theme.idleLife && Array.isArray(theme.idleLife.behaviors)
+    ? normalizeBehaviors(theme.idleLife.behaviors)
+    : [];
+  idleLifeScheduler = behaviors.length
+    ? createIdleLifeScheduler({
+      behaviors,
+      cooldownMs: (theme.idleLife && theme.idleLife.cooldownMs) || 30000,
+    })
+    : null;
+  if (idleLifeScheduler) idleLifeScheduler.reset();
+  cancelIdleLife(ctx, { restore: false });
 }
 
 refreshTheme();
@@ -171,11 +193,18 @@ function runMainTickOnce() {
       lastEyeDy = 0;
       if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
       if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
+      // Fresh idle session: clear any idle-life carry-over without restoring
+      // (we're already at idle-follow) and reset the scheduler cooldown.
+      cancelIdleLife(ctx, { restore: false });
+      if (idleLifeScheduler) idleLifeScheduler.reset();
     }
 
     if (!idleNow && idleWasActive) {
       if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
       if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
+      // Leaving idle (an agent state took over): drop idle-life, don't restore
+      // idle-follow — the new state owns the visual now (preemption, invariant #2).
+      cancelIdleLife(ctx, { restore: false });
     }
     idleWasActive = idleNow;
 
@@ -248,6 +277,9 @@ function runMainTickOnce() {
           isMouseIdle = false;
           ctx.sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
         }
+        // Mouse moved ⇒ cancel any in-flight idle-life behavior and restore the
+        // idle-follow svg immediately (invariant #2: instant interruption).
+        if (ctx._idleLifeActive) cancelIdleLife(ctx);
       }
 
       const elapsed = Date.now() - mouseStillSince;
@@ -296,9 +328,29 @@ function runMainTickOnce() {
         }, 250 + pick.duration);
         return nextDelay();
       }
+
+      // ── Idle-life (Context-Aware Companion) ──
+      // Within the pre-sleep mouse-still window, periodically play a richer
+      // idle behavior (yawn/snack/bored/…). Layered AFTER the built-in idle
+      // animation: only fires when not mid-anim (!isMouseIdle), not sleeping
+      // (!hasTriggeredYawn), not already running one, and strictly before the
+      // sleep threshold. The scheduler's cooldown rate-limits picks. All
+      // conflict-safety (DND/mini/idle gating + preemption) lives in
+      // maybePlayIdleLife / cancelIdleLife.
+      if (
+        idleLifeScheduler
+        && !isMouseIdle
+        && !ctx._idleLifeActive
+        && !hasTriggeredYawn
+        && elapsed >= MOUSE_IDLE_TIMEOUT
+        && elapsed < MOUSE_SLEEP_TIMEOUT
+      ) {
+        const played = maybePlayIdleLife(ctx, elapsed, idleLifeScheduler);
+        if (played) return nextDelay();
+      }
     }
 
-    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
+    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle && !ctx._idleLifeActive) || miniIdleNow;
     if (!trackEyesNow) return nextDelay();
     if (shouldSuppressPassiveIpc()) {
       if (ctx.forceEyeResend) ctx.forceEyeResend = false;

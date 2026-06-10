@@ -58,7 +58,11 @@ const ACTIONS = Object.freeze([
       "settling, mouth closing, eyes relaxed, arms lowering toward sides",
     ],
     { totalMs: 3200, loop: "once", hold: { 2: 1.6 } },
-    { idleMinMs: 120000, weight: 0.30 }),
+    // idleMinMs values are seconds-scale on purpose: idle-life plays inside the
+    // existing mouse-still idle window (≈20s..mouseSleepTimeout) BEFORE the pet
+    // dozes off, so the sleep sequence is never touched. Staggered so deeper
+    // idle unlocks more behaviors.
+    { idleMinMs: 22000, weight: 0.30 }),
 
   action("snack", "idle-life", 4, { cols: 2, rows: 2 },
     [
@@ -68,7 +72,7 @@ const ACTIONS = Object.freeze([
       "patting its belly, satisfied, the cookie now gone",
     ],
     { totalMs: 4000, loop: "once" },
-    { idleMinMs: 180000, weight: 0.20 }),
+    { idleMinMs: 30000, weight: 0.20 }),
 
   action("wander", "idle-life", 4, { cols: 2, rows: 2 },
     [
@@ -78,7 +82,7 @@ const ACTIONS = Object.freeze([
       "stopping, looking around",
     ],
     { totalMs: 2500, loop: "loop", windowMove: { dxRange: [50, 80] } },
-    { idleMinMs: 300000, weight: 0.15 }),
+    { idleMinMs: 38000, weight: 0.15 }),
 
   action("bored", "idle-life", 4, { cols: 2, rows: 2 },
     [
@@ -88,7 +92,7 @@ const ACTIONS = Object.freeze([
       "sighing, shoulders dropped",
     ],
     { totalMs: 5000, loop: "loop" },
-    { idleMinMs: 600000, weight: 0.25 }),
+    { idleMinMs: 46000, weight: 0.25 }),
 
   action("nap-hint", "idle-life", 4, { cols: 2, rows: 2 },
     [
@@ -98,7 +102,7 @@ const ACTIONS = Object.freeze([
       "rubbing one eye, sleepy",
     ],
     { totalMs: 4000, loop: "once" },
-    { idleMinMs: 120000, weight: 0.20, hourRange: [23, 6] }),
+    { idleMinMs: 52000, weight: 0.20, hourRange: [23, 6] }),
 
   action("curious", "idle-life", 3, { cols: 3, rows: 1 },
     [
