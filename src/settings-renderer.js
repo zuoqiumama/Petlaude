@@ -35,6 +35,7 @@ const SIDEBAR_TABS = [
   { id: "shortcuts", icon: "\u2328", labelKey: "sidebarShortcuts", available: true },
   { id: "telegram-approval", icon: "\u2708", labelKey: "sidebarTelegramApproval", available: true },
   { id: "remote-ssh", icon: "\u{1F50C}", labelKey: "sidebarRemoteSsh", available: true },
+  { id: "studio", icon: "\u{1FA84}", labelKey: "sidebarStudio", available: true },
   { id: "about", icon: "\u2139", labelKey: "sidebarAbout", available: true },
 ];
 
@@ -103,6 +104,7 @@ globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
+if (globalThis.ClawdSettingsTabStudio) globalThis.ClawdSettingsTabStudio.init(core);
 
 if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
