@@ -5,9 +5,13 @@
 // action animations (all at once or per action). Talks to main via
 // window.studioAPI (see preload-settings.js); generation progress streams in
 // through studioAPI.onProgress and updates per-action badges in place.
+//
+// Markup follows the settings design system: h1/.subtitle page header,
+// .section > .section-title + .section-rows cards, .row layouts with
+// .row-text/.row-control, .soft-btn buttons, .studio-input fields
+// (styles in settings.css under "AI Pet Studio").
 
 (function initSettingsTabStudio(root) {
-  let state = null;
   let helpers = null;
   let ops = null;
 
@@ -21,30 +25,35 @@
     busy: false,          // any generation in flight
     statuses: new Map(),  // actionId -> { stage, error? }
     badgeEls: new Map(),  // actionId -> badge element (live while tab mounted)
+    apiStatus: "",        // last save/test status line
     progressUnsub: null,
     seq: 0,
   };
 
   const STAGE_ORDER = ["start", "generated", "extracted", "assembled", "written"];
+  const CATEGORY_LABEL_KEYS = {
+    "idle-life": "studioCatIdle",
+    context: "studioCatContext",
+    touch: "studioCatTouch",
+  };
 
   function t(key) { return helpers.t(key); }
 
   function loadInitial() {
+    if (!window.studioAPI) return;
     const seq = ++view.seq;
-    if (window.studioAPI) {
-      window.studioAPI.getConfig().then((cfg) => {
+    window.studioAPI.getConfig().then((cfg) => {
+      if (seq !== view.seq) return;
+      view.cfg = cfg;
+      view.cfgLoaded = true;
+      ops.requestRender({ content: true });
+    }).catch(() => {});
+    if (!view.actions) {
+      window.studioAPI.getActions().then((actions) => {
         if (seq !== view.seq) return;
-        view.cfg = cfg;
-        view.cfgLoaded = true;
+        view.actions = actions;
         ops.requestRender({ content: true });
       }).catch(() => {});
-      if (!view.actions) {
-        window.studioAPI.getActions().then((actions) => {
-          if (seq !== view.seq) return;
-          view.actions = actions;
-          ops.requestRender({ content: true });
-        }).catch(() => {});
-      }
     }
   }
 
@@ -64,7 +73,7 @@
     if (status.stage === "written") return t("studioStatusDone");
     const idx = STAGE_ORDER.indexOf(status.stage);
     if (idx < 0) return status.stage;
-    return `${t("studioGenerating")} ${idx + 1}/${STAGE_ORDER.length}`;
+    return `${idx + 1}/${STAGE_ORDER.length}`;
   }
 
   function updateBadge(actionId) {
@@ -74,27 +83,66 @@
     el.textContent = stageLabel(status);
     el.classList.toggle("studio-badge-error", !!(status && status.stage === "error"));
     el.classList.toggle("studio-badge-done", !!(status && status.stage === "written"));
+    el.classList.toggle(
+      "studio-badge-busy",
+      !!(status && status.stage && status.stage !== "error" && status.stage !== "written"),
+    );
   }
 
-  function field(labelText, inputEl) {
-    const row = document.createElement("div");
-    row.className = "row";
-    const label = document.createElement("label");
+  // ── building blocks ──
+
+  function section(titleKey) {
+    const wrap = document.createElement("div");
+    wrap.className = "section";
+    const title = document.createElement("div");
+    title.className = "section-title";
+    title.textContent = t(titleKey);
+    wrap.appendChild(title);
+    const rows = document.createElement("div");
+    rows.className = "section-rows";
+    wrap.appendChild(rows);
+    return { wrap, rows };
+  }
+
+  function row(rows, labelText, descText) {
+    const r = document.createElement("div");
+    r.className = "row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
     label.textContent = labelText;
-    label.style.minWidth = "120px";
-    row.appendChild(label);
-    row.appendChild(inputEl);
-    return row;
+    text.appendChild(label);
+    if (descText) {
+      const desc = document.createElement("span");
+      desc.className = "row-desc";
+      desc.textContent = descText;
+      text.appendChild(desc);
+    }
+    const control = document.createElement("div");
+    control.className = "row-control";
+    r.appendChild(text);
+    r.appendChild(control);
+    rows.appendChild(r);
+    return { row: r, text, control };
   }
 
-  function textInput(value, { type = "text", placeholder = "" } = {}) {
-    const input = document.createElement("input");
-    input.type = type;
-    input.value = value || "";
-    input.placeholder = placeholder;
-    input.style.flex = "1";
-    input.spellcheck = false;
-    return input;
+  function input(value, { type = "text", placeholder = "" } = {}) {
+    const el = document.createElement("input");
+    el.type = type;
+    el.value = value || "";
+    el.placeholder = placeholder;
+    el.className = "studio-input";
+    el.spellcheck = false;
+    el.autocomplete = "off";
+    return el;
+  }
+
+  function softBtn(label, { accent = false } = {}) {
+    const btn = document.createElement("button");
+    btn.className = accent ? "soft-btn accent" : "soft-btn";
+    btn.textContent = label;
+    return btn;
   }
 
   function getDraft() {
@@ -108,41 +156,37 @@
     return view.draft;
   }
 
-  function renderApiSection(container) {
-    const section = document.createElement("div");
-    section.className = "studio-section";
-    const title = document.createElement("h3");
-    title.textContent = t("studioApiSection");
-    section.appendChild(title);
+  // ── sections ──
 
+  function renderApiSection(parent) {
+    const { wrap, rows } = section("studioApiSection");
     const draft = getDraft();
-    const baseUrlInput = textInput(draft.baseUrl, { placeholder: "https://…" });
-    baseUrlInput.addEventListener("input", () => { getDraft().baseUrl = baseUrlInput.value; });
-    section.appendChild(field(t("studioBaseUrl"), baseUrlInput));
 
-    const modelInput = textInput(draft.model, { placeholder: "gpt-image-2" });
+    const urlRow = row(rows, t("studioBaseUrl"));
+    const urlInput = input(draft.baseUrl, { placeholder: "https://…" });
+    urlInput.addEventListener("input", () => { getDraft().baseUrl = urlInput.value; });
+    urlRow.control.appendChild(urlInput);
+
+    const modelRow = row(rows, t("studioModel"));
+    const modelInput = input(draft.model, { placeholder: "gpt-image-2" });
     modelInput.addEventListener("input", () => { getDraft().model = modelInput.value; });
-    section.appendChild(field(t("studioModel"), modelInput));
+    modelRow.control.appendChild(modelInput);
 
-    const keyPlaceholder = view.cfg && view.cfg.hasKey ? t("studioApiKeySaved") : "sk-…";
-    const keyInput = textInput("", { type: "password", placeholder: keyPlaceholder });
-    keyInput.autocomplete = "off";
+    const keyDesc = view.cfg && view.cfg.hasKey ? t("studioApiKeySaved") : "";
+    const keyRow = row(rows, t("studioApiKey"), keyDesc);
+    const keyInput = input("", { type: "password", placeholder: "sk-…" });
     keyInput.addEventListener("input", () => { getDraft().apiKey = keyInput.value; });
-    section.appendChild(field(t("studioApiKey"), keyInput));
+    keyRow.control.appendChild(keyInput);
 
-    const actions = document.createElement("div");
-    actions.className = "row";
-    const saveBtn = document.createElement("button");
-    saveBtn.textContent = t("studioSave");
-    const testBtn = document.createElement("button");
-    testBtn.textContent = t("studioTest");
-    const status = document.createElement("span");
-    status.className = "row-desc";
-    status.style.marginLeft = "8px";
-    actions.appendChild(saveBtn);
-    actions.appendChild(testBtn);
-    actions.appendChild(status);
-    section.appendChild(actions);
+    const actionRow = row(rows, "", view.apiStatus || "");
+    const statusDesc = actionRow.text.querySelector(".row-desc")
+      || actionRow.text.appendChild(Object.assign(document.createElement("span"), { className: "row-desc" }));
+    actionRow.text.querySelector(".row-label").remove();
+
+    const testBtn = softBtn(t("studioTest"));
+    const saveBtn = softBtn(t("studioSave"), { accent: true });
+    actionRow.control.appendChild(testBtn);
+    actionRow.control.appendChild(saveBtn);
 
     saveBtn.addEventListener("click", () => {
       const d = getDraft();
@@ -150,61 +194,52 @@
       window.studioAPI.saveConfig({ baseUrl: d.baseUrl, model: d.model, apiKey: d.apiKey }).then((res) => {
         saveBtn.disabled = false;
         if (res && res.status === "ok") {
-          status.textContent = res.keyPersisted === false && d.apiKey
+          view.apiStatus = res.keyPersisted === false && d.apiKey
             ? t("studioKeyNotPersisted")
             : t("studioSaved");
           view.draft = null;
           loadInitial();
         } else {
-          status.textContent = (res && res.message) || t("toastSaveFailed");
+          view.apiStatus = (res && res.message) || t("toastSaveFailed");
         }
+        statusDesc.textContent = view.apiStatus;
       });
     });
 
     testBtn.addEventListener("click", () => {
       testBtn.disabled = true;
-      status.textContent = "…";
+      statusDesc.textContent = "…";
       window.studioAPI.testConfig().then((res) => {
         testBtn.disabled = false;
-        status.textContent = res && res.status === "ok"
+        view.apiStatus = res && res.status === "ok"
           ? (res.note ? `${t("studioTestOk")} (${res.note})` : t("studioTestOk"))
           : ((res && res.message) || t("studioTestFailed"));
+        statusDesc.textContent = view.apiStatus;
       });
     });
 
-    container.appendChild(section);
+    parent.appendChild(wrap);
   }
 
-  function renderReferenceSection(container) {
-    const section = document.createElement("div");
-    section.className = "studio-section";
-    const title = document.createElement("h3");
-    title.textContent = t("studioReferenceSection");
-    section.appendChild(title);
+  function renderReferenceSection(parent) {
+    const { wrap, rows } = section("studioReferenceSection");
 
-    const nameInput = textInput(view.petName, { placeholder: t("studioPetNamePlaceholder") });
+    const nameRow = row(rows, t("studioPetName"));
+    const nameInput = input(view.petName, { placeholder: t("studioPetNamePlaceholder") });
     nameInput.addEventListener("input", () => { view.petName = nameInput.value; });
-    section.appendChild(field(t("studioPetName"), nameInput));
+    nameRow.control.appendChild(nameInput);
 
-    const row = document.createElement("div");
-    row.className = "row";
-    const pickBtn = document.createElement("button");
-    pickBtn.textContent = t("studioPickImage");
-    row.appendChild(pickBtn);
-
-    const preview = document.createElement("img");
-    preview.alt = "";
-    preview.style.cssText = "width:72px;height:72px;object-fit:contain;margin-left:12px;border-radius:8px;background:rgba(127,127,127,.12)";
-    if (view.reference) preview.src = view.reference.dataUrl;
-    else preview.style.display = "none";
-    row.appendChild(preview);
-
-    const hint = document.createElement("span");
-    hint.className = "row-desc";
-    hint.style.marginLeft = "8px";
-    hint.textContent = view.reference ? view.reference.path : t("studioNoReference");
-    row.appendChild(hint);
-
+    const refDesc = view.reference ? view.reference.path : t("studioNoReference");
+    const pickRow = row(rows, t("studioPickImage"), refDesc);
+    if (view.reference) {
+      const preview = document.createElement("img");
+      preview.className = "studio-ref-preview";
+      preview.alt = "";
+      preview.src = view.reference.dataUrl;
+      pickRow.control.appendChild(preview);
+    }
+    const pickBtn = softBtn(t("studioPickImage"));
+    pickRow.control.appendChild(pickBtn);
     pickBtn.addEventListener("click", () => {
       window.studioAPI.pickReference().then((res) => {
         if (res && res.status === "ok") {
@@ -216,8 +251,7 @@
       });
     });
 
-    section.appendChild(row);
-    container.appendChild(section);
+    parent.appendChild(wrap);
   }
 
   function canGenerate() {
@@ -232,7 +266,6 @@
     view.busy = true;
     for (const id of badgeActionIds) {
       view.statuses.set(id, { stage: "start" });
-      updateBadge(id);
     }
     ops.requestRender({ content: true });
     window.studioAPI.generate({
@@ -257,94 +290,88 @@
     });
   }
 
-  function renderActionsSection(container) {
-    const section = document.createElement("div");
-    section.className = "studio-section";
-    const title = document.createElement("h3");
-    title.textContent = t("studioActionsSection");
-    section.appendChild(title);
+  function actionCard(action) {
+    const card = document.createElement("div");
+    card.className = "studio-action-card";
 
-    const allRow = document.createElement("div");
-    allRow.className = "row";
-    const allBtn = document.createElement("button");
-    allBtn.textContent = view.busy ? t("studioGenerating") : t("studioGenerateAll");
+    const head = document.createElement("div");
+    head.className = "studio-action-head";
+    const name = document.createElement("span");
+    name.className = "studio-action-name";
+    name.textContent = action.id;
+    const badge = document.createElement("span");
+    badge.className = "studio-badge";
+    view.badgeEls.set(action.id, badge);
+    head.appendChild(name);
+    head.appendChild(badge);
+    card.appendChild(head);
+
+    const meta = document.createElement("span");
+    meta.className = "studio-action-meta";
+    meta.textContent = `${action.frames}f · ${Math.round(action.durationMs / 100) / 10}s`;
+    card.appendChild(meta);
+
+    const btn = softBtn(t("studioGenerate"));
+    btn.classList.add("studio-action-btn");
+    btn.disabled = !canGenerate();
+    btn.addEventListener("click", () => runGenerate({ actionId: action.id }, [action.id]));
+    card.appendChild(btn);
+
+    updateBadge(action.id);
+    return card;
+  }
+
+  function renderActionsSection(parent) {
+    const { wrap, rows } = section("studioActionsSection");
+
+    const allRow = row(rows, t("studioGenerateAll"));
+    const allBtn = softBtn(view.busy ? t("studioGenerating") : t("studioGenerateAll"), { accent: true });
     allBtn.disabled = !canGenerate();
     allBtn.addEventListener("click", () => {
       runGenerate({ mode: "all" }, (view.actions || []).map((a) => a.id));
     });
-    allRow.appendChild(allBtn);
-    section.appendChild(allRow);
+    allRow.control.appendChild(allBtn);
 
     view.badgeEls.clear();
-    const categories = [
-      ["idle-life", t("studioCatIdle")],
-      ["context", t("studioCatContext")],
-      ["touch", t("studioCatTouch")],
-    ];
-    for (const [cat, label] of categories) {
+    const gridRow = document.createElement("div");
+    gridRow.className = "row studio-actions-row";
+    for (const [cat, labelKey] of Object.entries(CATEGORY_LABEL_KEYS)) {
+      const actions = (view.actions || []).filter((a) => a.category === cat);
+      if (!actions.length) continue;
       const catTitle = document.createElement("div");
-      catTitle.className = "row-desc";
-      catTitle.style.cssText = "margin-top:10px;font-weight:600";
-      catTitle.textContent = label;
-      section.appendChild(catTitle);
+      catTitle.className = "studio-cat-title";
+      catTitle.textContent = t(labelKey);
+      gridRow.appendChild(catTitle);
 
       const grid = document.createElement("div");
-      grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-top:6px";
-      for (const action of (view.actions || []).filter((a) => a.category === cat)) {
-        const card = document.createElement("div");
-        card.style.cssText = "border:1px solid rgba(127,127,127,.25);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px";
-
-        const head = document.createElement("div");
-        head.style.cssText = "display:flex;justify-content:space-between;align-items:center";
-        const name = document.createElement("span");
-        name.textContent = action.id;
-        name.style.fontWeight = "600";
-        const badge = document.createElement("span");
-        badge.className = "row-desc";
-        view.badgeEls.set(action.id, badge);
-        head.appendChild(name);
-        head.appendChild(badge);
-        card.appendChild(head);
-
-        const meta = document.createElement("span");
-        meta.className = "row-desc";
-        meta.textContent = `${action.frames}f · ${Math.round(action.durationMs / 100) / 10}s`;
-        card.appendChild(meta);
-
-        const btn = document.createElement("button");
-        btn.textContent = t("studioGenerate");
-        btn.disabled = !canGenerate();
-        btn.addEventListener("click", () => runGenerate({ actionId: action.id }, [action.id]));
-        card.appendChild(btn);
-
-        grid.appendChild(card);
-        updateBadge(action.id);
-      }
-      section.appendChild(grid);
+      grid.className = "studio-action-grid";
+      for (const action of actions) grid.appendChild(actionCard(action));
+      gridRow.appendChild(grid);
     }
+    rows.appendChild(gridRow);
 
-    container.appendChild(section);
+    parent.appendChild(wrap);
   }
 
-  function render(container) {
+  function render(parent) {
     subscribeProgress();
     if (!view.cfgLoaded || !view.actions) loadInitial();
 
-    const wrap = document.createElement("div");
-    wrap.className = "studio-tab";
-    const intro = document.createElement("p");
-    intro.className = "row-desc";
-    intro.textContent = t("studioIntro");
-    wrap.appendChild(intro);
+    const h1 = document.createElement("h1");
+    h1.textContent = t("sidebarStudio");
+    parent.appendChild(h1);
 
-    renderApiSection(wrap);
-    renderReferenceSection(wrap);
-    renderActionsSection(wrap);
-    container.appendChild(wrap);
+    const subtitle = document.createElement("p");
+    subtitle.className = "subtitle";
+    subtitle.textContent = t("studioIntro");
+    parent.appendChild(subtitle);
+
+    renderApiSection(parent);
+    renderReferenceSection(parent);
+    renderActionsSection(parent);
   }
 
   function init(core) {
-    state = core.state;
     helpers = core.helpers;
     ops = core.ops;
     core.tabs.studio = { render };

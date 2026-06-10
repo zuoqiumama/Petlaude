@@ -3624,3 +3624,100 @@ html, body {
 .row-desc a:hover {
   opacity: 0.8;
 }
+
+/* ── AI Pet Studio ── */
+.studio-input {
+  width: 260px;
+  max-width: 46vw;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.studio-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+.studio-ref-preview {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
+}
+.studio-actions-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.studio-cat-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+.studio-cat-title:first-child {
+  margin-top: 0;
+}
+.studio-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+}
+.studio-action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--row-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
+  transition: border-color 0.2s ease-out;
+}
+.studio-action-card:hover {
+  border-color: var(--border);
+}
+.studio-action-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.studio-action-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.studio-action-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.studio-badge {
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+.studio-badge-busy {
+  color: var(--accent);
+}
+.studio-badge-done {
+  color: #3d8a5f;
+}
+.studio-badge-error {
+  color: var(--toast-error);
+}
+.studio-action-btn {
+  align-self: flex-start;
+  padding: 5px 11px;
+  font-size: 11px;
+  border-radius: 9px;
+}
