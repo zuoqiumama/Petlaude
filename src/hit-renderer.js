@@ -280,6 +280,27 @@ function handleClick(clientX) {
 
   if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
 
+  // Touch reaction (Context-Aware Companion): when the theme defines a
+  // rapidClick (6+) tier, resolve ALL multi-click reactions on the debounce
+  // window so 6 clicks are reachable. Themes without rapidClick keep the
+  // original immediate-at-4 behavior below, byte-for-byte unchanged.
+  if (_getReaction("rapidClick") && window.ClawdClickTiers) {
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      const count = clickCount;
+      const dir = firstClickDir;
+      clickCount = 0;
+      firstClickDir = null;
+      if (count === 2 && petClickActionEnabled && typeof window.hitAPI.launchClickAction === "function") {
+        window.hitAPI.launchClickAction();
+      }
+      if (!canPlayReactionNow()) return;
+      const r = window.ClawdClickTiers.resolveClickReaction(count, _reactions, Math.random, dir);
+      if (r && r.file) playReaction(r.file, r.duration);
+    }, CLICK_WINDOW_MS);
+    return;
+  }
+
   const doubleReact = _getReaction("double");
   const annoyedReact = _getReaction("annoyed");
   const leftReact = _getReaction("clickLeft");
@@ -343,6 +364,14 @@ function endDragReaction() {
   if (!isDragReacting) return;
   isDragReacting = false;
   window.hitAPI.endDragReaction();
+  // Touch reaction: play a "shake-off" after being dropped, if the theme
+  // defines reactions.dragRelease and the pet is in a state that allows it.
+  if (window.ClawdClickTiers) {
+    const r = window.ClawdClickTiers.resolveDragEndReaction(_reactions);
+    if (r && r.file && canPlayReactionNow()) {
+      playReaction(r.file, r.duration);
+    }
+  }
 }
 
 // --- Right-click context menu ---
