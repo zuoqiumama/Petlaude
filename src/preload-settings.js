@@ -157,6 +157,38 @@ contextBridge.exposeInMainWorld("doctor", {
 // Profile CRUD goes through the existing settingsAPI.command pathway
 // (action: "remoteSsh.add" | "remoteSsh.update" | "remoteSsh.delete") so all
 // writes flow through settings-controller as the single source of truth.
+// ── AI Pet Studio ──
+//
+// Surface: window.studioAPI
+//
+//   getActions()                  Promise<Array<{id, category, frames, durationMs}>>
+//   getConfig()                   Promise<{ baseUrl, model, hasKey }>  (key never exposed)
+//   saveConfig(cfg)               Promise<{ status, keyPersisted?, message? }>
+//   testConfig()                  Promise<{ status, note?, message? }>
+//   pickReference()               Promise<{ status, path?, dataUrl?, message? }>
+//   generate(payload)             Promise<{ status, themeId?, result?, summary?, message? }>
+//                                 payload: { mode?: "all", actionId?, petName, referencePath }
+//   onProgress(cb)                cb({ actionId, stage, ... }) — generation progress stream
+const studioProgressListeners = new Set();
+ipcRenderer.on("studio:progress", (_event, payload) => {
+  for (const cb of studioProgressListeners) {
+    try { cb(payload); } catch (err) { console.warn("studio progress listener threw:", err); }
+  }
+});
+contextBridge.exposeInMainWorld("studioAPI", {
+  getActions: () => ipcRenderer.invoke("studio:get-actions"),
+  getConfig: () => ipcRenderer.invoke("studio:get-config"),
+  saveConfig: (cfg) => ipcRenderer.invoke("studio:save-config", cfg),
+  testConfig: () => ipcRenderer.invoke("studio:test-config"),
+  pickReference: () => ipcRenderer.invoke("studio:pick-reference"),
+  generate: (payload) => ipcRenderer.invoke("studio:generate", payload),
+  onProgress: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    studioProgressListeners.add(cb);
+    return () => studioProgressListeners.delete(cb);
+  },
+});
+
 contextBridge.exposeInMainWorld("remoteSsh", {
   listStatuses: () => ipcRenderer.invoke("remoteSsh:list-statuses"),
   status: (profileId) => ipcRenderer.invoke("remoteSsh:status", profileId),

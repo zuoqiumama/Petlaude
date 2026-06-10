@@ -1,0 +1,131 @@
+"use strict";
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const { registerStudioIpc } = require("../src/studio-ipc");
+
+const TEMPLATE_DIR = path.join(__dirname, "..", "themes", "template");
+
+function fakeIpcMain() {
+  const handlers = new Map();
+  return {
+    handlers,
+    handle: (ch, fn) => handlers.set(ch, fn),
+    removeHandler: (ch) => handlers.delete(ch),
+    invoke: (ch, ...args) => handlers.get(ch)(null, ...args),
+  };
+}
+
+function fakeConfig(cfg = {}) {
+  let stored = { baseUrl: "", model: "", apiKey: "", ...cfg };
+  return {
+    loadConfig: () => ({ ...stored }),
+    saveConfig: (next) => {
+      if (!/^https:/.test(next.baseUrl || "")) throw new Error("baseUrl must use https");
+      stored = { ...stored, ...next };
+      return { keyPersisted: true };
+    },
+  };
+}
+
+function tmpDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "clawd-studio-ipc-"));
+}
+
+function writeRef(dir) {
+  const p = path.join(dir, "buddy.png");
+  fs.writeFileSync(p, Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  ));
+  return p;
+}
+
+function register(overrides = {}) {
+  const ipcMain = fakeIpcMain();
+  const deps = {
+    ipcMain,
+    dialog: { showOpenDialog: async () => ({ canceled: true }) },
+    studioConfig: fakeConfig({ baseUrl: "https://api.example.com", model: "gpt-image-2", apiKey: "sk-x" }),
+    getProcessor: () => ({
+      makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+      processStrip: async (p) => ({
+        frames: Array.from({ length: p.cols * p.rows }, (_, i) => `data:image/png;base64,F${i}`),
+        report: [],
+      }),
+    }),
+    userThemesDir: tmpDir(),
+    templateDir: TEMPLATE_DIR,
+    getSettingsWindow: () => null,
+    runtimeDeps: {
+      generateImage: async () => "https://img.example/s.png",
+      downloadImage: async () => Buffer.from("png"),
+    },
+    ...overrides,
+  };
+  registerStudioIpc(deps);
+  return { ipcMain, deps };
+}
+
+describe("studio-ipc", () => {
+  it("get-config reports hasKey but never the key itself", async () => {
+    const { ipcMain } = register();
+    const cfg = await ipcMain.invoke("studio:get-config");
+    assert.deepStrictEqual(cfg, { baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true });
+    assert.ok(!("apiKey" in cfg));
+  });
+
+  it("get-actions returns the manifest summary", async () => {
+    const { ipcMain } = register();
+    const actions = await ipcMain.invoke("studio:get-actions");
+    assert.ok(actions.length >= 14);
+    assert.ok(actions.every((a) => a.id && a.category && a.frames > 0));
+  });
+
+  it("generate runs a single action end-to-end and writes the theme", async () => {
+    const { ipcMain, deps } = register();
+    const ref = writeRef(tmpDir());
+    const res = await ipcMain.invoke("studio:generate", { actionId: "yawn", petName: "Buddy", referencePath: ref });
+    assert.strictEqual(res.status, "ok");
+    assert.strictEqual(res.themeId, "buddy");
+    assert.ok(fs.existsSync(path.join(deps.userThemesDir, "buddy", "assets", "yawn.svg")));
+  });
+
+  it("generate rejects concurrent runs", async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { ipcMain } = register({
+      runtimeDeps: {
+        generateImage: async () => { await gate; return "https://img.example/s.png"; },
+        downloadImage: async () => Buffer.from("png"),
+      },
+    });
+    const ref = writeRef(tmpDir());
+    const first = ipcMain.invoke("studio:generate", { actionId: "yawn", petName: "A", referencePath: ref });
+    const second = await ipcMain.invoke("studio:generate", { actionId: "snack", petName: "A", referencePath: ref });
+    assert.strictEqual(second.status, "error");
+    assert.match(second.message, /already running/);
+    release();
+    const firstRes = await first;
+    assert.strictEqual(firstRes.status, "ok");
+  });
+
+  it("generate validates config and reference", async () => {
+    const { ipcMain } = register({ studioConfig: fakeConfig() });
+    const res = await ipcMain.invoke("studio:generate", { actionId: "yawn", referencePath: "C:/nope.png" });
+    assert.strictEqual(res.status, "error");
+    assert.match(res.message, /config incomplete/);
+  });
+
+  it("test-config treats 2xx as ok and 401 as error", async () => {
+    const { ipcMain } = register({ httpGet: async () => ({ status: 200 }) });
+    assert.deepStrictEqual(await ipcMain.invoke("studio:test-config"), { status: "ok" });
+    const bad = register({ httpGet: async () => ({ status: 401 }) });
+    const res = await bad.ipcMain.invoke("studio:test-config");
+    assert.strictEqual(res.status, "error");
+  });
+});

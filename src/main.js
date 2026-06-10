@@ -2486,6 +2486,34 @@ registerSettingsIpc({
   aboutHeroSvgPath: path.join(__dirname, "..", "assets", "svg", "clawd-about-hero.svg"),
 });
 
+// ── AI Pet Studio ──
+// Lazy offscreen processor (hidden canvas window) + encrypted config store.
+let _studioOffscreen = null;
+function getStudioProcessor() {
+  if (!_studioOffscreen) {
+    const { createOffscreenRuntime } = require("./studio/offscreen-runtime");
+    _studioOffscreen = createOffscreenRuntime({});
+  }
+  return _studioOffscreen;
+}
+const { createStudioConfig, createJsonFileStore } = require("./studio/studio-config");
+const { registerStudioIpc } = require("./studio-ipc");
+registerStudioIpc({
+  ipcMain,
+  dialog,
+  studioConfig: createStudioConfig({
+    store: createJsonFileStore(path.join(app.getPath("userData"), "studio-config.json")),
+  }),
+  getProcessor: getStudioProcessor,
+  userThemesDir: path.join(app.getPath("userData"), "themes"),
+  templateDir: path.join(__dirname, "..", "themes", "template"),
+  getSettingsWindow,
+  onThemesChanged: () => {
+    // The themes list is re-scanned when the Theme tab queries it; nothing to
+    // invalidate eagerly here.
+  },
+});
+
 registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),

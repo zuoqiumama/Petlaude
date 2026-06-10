@@ -72,4 +72,34 @@ function createStudioConfig(deps = {}) {
   return { saveConfig, loadConfig, hasKey };
 }
 
-module.exports = { createStudioConfig };
+// Minimal JSON-file-backed store for the studio config (separate from prefs.js,
+// which is schema-driven). Lazy-read, write-through on set/delete.
+function createJsonFileStore(filePath, fsModule) {
+  const fs = fsModule || require("fs");
+  let cache = null;
+
+  function read() {
+    if (cache) return cache;
+    try {
+      cache = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    } catch {
+      cache = {};
+    }
+    return cache;
+  }
+
+  function flush() {
+    try {
+      fs.mkdirSync(require("path").dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+    } catch { /* best-effort persistence */ }
+  }
+
+  return {
+    get: (k) => read()[k],
+    set: (k, v) => { read()[k] = v; flush(); },
+    delete: (k) => { delete read()[k]; flush(); },
+  };
+}
+
+module.exports = { createStudioConfig, createJsonFileStore };
