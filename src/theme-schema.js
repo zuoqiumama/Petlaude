@@ -149,6 +149,32 @@ function validateTheme(cfg) {
     }
   }
 
+  // Context-Aware Companion (optional, additive). Validate only when present.
+  if (cfg.idleLife !== undefined) {
+    if (!isPlainObject(cfg.idleLife) || !Array.isArray(cfg.idleLife.behaviors)) {
+      errors.push("idleLife.behaviors must be an array when idleLife is present");
+    } else {
+      for (const b of cfg.idleLife.behaviors) {
+        if (!isPlainObject(b) || typeof b.file !== "string" || !b.file) {
+          errors.push("idleLife.behaviors entries must each have a non-empty file");
+          break;
+        }
+      }
+    }
+  }
+  for (const [key, map] of [["contextReactions", cfg.contextReactions], ["touchReactions", cfg.touchReactions]]) {
+    if (map === undefined) continue;
+    if (!isPlainObject(map)) {
+      errors.push(`${key} must be an object when present`);
+      continue;
+    }
+    for (const [name, entry] of Object.entries(map)) {
+      if (!isPlainObject(entry) || typeof entry.file !== "string" || !entry.file) {
+        errors.push(`${key}.${name} must have a non-empty file`);
+      }
+    }
+  }
+
   if (cfg.updateBubbleAnchorBox !== undefined) {
     const box = cfg.updateBubbleAnchorBox;
     if (
@@ -334,6 +360,11 @@ function buildCapabilities(cfg) {
     reactions: hasReactionBindings(cfg && cfg.reactions),
     workingTiers: hasNonEmptyArray(cfg && cfg.workingTiers),
     jugglingTiers: hasNonEmptyArray(cfg && cfg.jugglingTiers),
+    // Context-Aware Companion (optional, additive). idleLife is an array of
+    // weighted behaviors; contextReactions/touchReactions are reaction maps.
+    idleLife: hasNonEmptyArray(cfg && cfg.idleLife && cfg.idleLife.behaviors),
+    contextReactions: hasReactionBindings(cfg && cfg.contextReactions),
+    touchReactions: hasReactionBindings(cfg && cfg.touchReactions),
     idleMode: deriveIdleMode(cfg),
     sleepMode: deriveSleepMode(cfg),
   };
@@ -379,6 +410,17 @@ function collectRequiredAssetFiles(theme) {
       for (const key of ["left", "center", "right"]) {
         if (typeof entry[key] === "string") addThemeAssetFile(files, entry[key]);
       }
+    }
+  }
+  if (isPlainObject(theme && theme.idleLife) && Array.isArray(theme.idleLife.behaviors)) {
+    for (const entry of theme.idleLife.behaviors) {
+      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
+    }
+  }
+  for (const map of [theme && theme.contextReactions, theme && theme.touchReactions]) {
+    if (!isPlainObject(map)) continue;
+    for (const entry of Object.values(map)) {
+      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
     }
   }
   if (isPlainObject(theme && theme.displayHintMap)) {
@@ -627,6 +669,14 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // reactions
   theme.reactions = raw.reactions || null;
 
+  // Context-Aware Companion (optional, additive)
+  theme.idleLife = isPlainObject(raw.idleLife) ? { ...raw.idleLife } : null;
+  if (theme.idleLife && Array.isArray(theme.idleLife.behaviors)) {
+    theme.idleLife.behaviors = theme.idleLife.behaviors.map((b) => ({ ...b }));
+  }
+  theme.contextReactions = isPlainObject(raw.contextReactions) ? { ...raw.contextReactions } : null;
+  theme.touchReactions = isPlainObject(raw.touchReactions) ? { ...raw.touchReactions } : null;
+
   // workingTiers / jugglingTiers — auto sort descending by minSessions
   if (theme.workingTiers) {
     theme.workingTiers.sort((a, b) => b.minSessions - a.minSessions);
@@ -687,6 +737,13 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   }
   if (Array.isArray(theme.idleAnimations)) {
     for (const a of theme.idleAnimations) { if (a && a.file) a.file = bn(a.file); }
+  }
+  if (theme.idleLife && Array.isArray(theme.idleLife.behaviors)) {
+    for (const b of theme.idleLife.behaviors) { if (b && b.file) b.file = bn(b.file); }
+  }
+  for (const map of [theme.contextReactions, theme.touchReactions]) {
+    if (!isPlainObject(map)) continue;
+    for (const r of Object.values(map)) { if (r && r.file) r.file = bn(r.file); }
   }
   if (theme.updateVisuals) {
     if (typeof theme.updateVisuals.checking === "string" && theme.updateVisuals.checking) {

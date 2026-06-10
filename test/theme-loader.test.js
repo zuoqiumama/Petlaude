@@ -861,6 +861,9 @@ describe("theme-loader capability metadata", () => {
       reactions: true,
       workingTiers: true,
       jugglingTiers: true,
+      idleLife: false,
+      contextReactions: false,
+      touchReactions: false,
       idleMode: "tracked",
       sleepMode: "full",
     });
@@ -875,6 +878,9 @@ describe("theme-loader capability metadata", () => {
       reactions: true,
       workingTiers: true,
       jugglingTiers: true,
+      idleLife: false,
+      contextReactions: false,
+      touchReactions: false,
       idleMode: "tracked",
       sleepMode: "full",
     });
