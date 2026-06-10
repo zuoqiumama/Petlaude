@@ -104,6 +104,26 @@ describe("normalizeBehaviors", () => {
     assert.strictEqual(out[0].durationMs, 3200);
     assert.strictEqual(out[1].hover, true);
   });
+
+  it("carries windowMove from the behavior or its anim", () => {
+    const out = normalizeBehaviors([
+      { id: "wander", file: "w.svg", duration: 2500, windowMove: { dxRange: [50, 80] }, trigger: {} },
+      { id: "wander2", file: "w2.svg", duration: 2500, anim: { windowMove: { dxRange: [10, 20] } }, trigger: {} },
+    ]);
+    assert.deepStrictEqual(out[0].windowMove, { dxRange: [50, 80] });
+    assert.deepStrictEqual(out[1].windowMove, { dxRange: [10, 20] });
+  });
+});
+
+describe("maybePlayIdleLife windowMove", () => {
+  it("calls ctx.moveWindowBy with a signed magnitude inside dxRange", () => {
+    const moves = [];
+    const ctx = fakeCtx({ moveWindowBy: (dx) => moves.push(dx), random: () => 0.5 });
+    const behavior = { id: "wander", file: "w.svg", durationMs: 2500, windowMove: { dxRange: [50, 80] } };
+    maybePlayIdleLife(ctx, 130000, { pick: () => behavior });
+    assert.strictEqual(moves.length, 1);
+    assert.strictEqual(Math.abs(moves[0]), 65); // 50 + (80-50)*0.5
+  });
 });
 
 describe("maybePlayIdleLife", () => {

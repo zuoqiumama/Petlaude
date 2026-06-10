@@ -80,6 +80,8 @@ function normalizeBehaviors(behaviors) {
       idleMinMs: Number.isFinite(t.idleMinMs) ? t.idleMinMs : (b.idleMinMs || 0),
       hourRange: Array.isArray(t.hourRange) ? [...t.hourRange] : (Array.isArray(b.hourRange) ? [...b.hourRange] : null),
       hover: !!(t.hover || b.hover),
+      // windowMove (e.g. wander) may live directly on the behavior or under anim.
+      windowMove: (b.windowMove || (b.anim && b.anim.windowMove)) || null,
     };
   });
 }

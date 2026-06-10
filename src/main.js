@@ -54,6 +54,7 @@ const {
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { getAllAgents } = require("../agents/registry");
 const { launchPetClickAction } = require("./pet-click-launcher");
+const { computeWanderTarget } = require("./companion/idle-life");
 const {
   buildFileDropState,
   executeFileDropAction,
@@ -1281,12 +1282,27 @@ function getUpdateBubbleAnchorRect(bounds) { return petWindowRuntime.getUpdateBu
 function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHudAnchorRect(bounds); }
 
 // ── Main tick — delegated to src/tick.js ──
+// Idle-life "wander": shift the pet window sideways by dx, clamped to the work
+// area. Guarded so it only runs while idle and never during mini/drag.
+function moveWindowBy(dx) {
+  if (_mini.getMiniMode() || petWindowRuntime.isDragLocked()) return;
+  if (_state.getCurrentState() !== "idle") return;
+  const bounds = getPetWindowBounds();
+  if (!bounds) return;
+  const wa = getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  const target = computeWanderTarget(bounds, wa, dx);
+  applyPetWindowBounds({ ...bounds, x: target.x, y: target.y });
+  syncHitWin();
+}
+
 const _tickCtx = {
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   getPetWindowBounds,
   get currentState() { return _state.getCurrentState(); },
   get currentSvg() { return _state.getCurrentSvg(); },
+  get doNotDisturb() { return doNotDisturb; },
+  moveWindowBy,
   get miniMode() { return _mini.getMiniMode(); },
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   get dragLocked() { return petWindowRuntime.isDragLocked(); },
