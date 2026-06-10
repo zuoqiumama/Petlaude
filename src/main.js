@@ -56,6 +56,10 @@ const { getAllAgents } = require("../agents/registry");
 const { launchPetClickAction } = require("./pet-click-launcher");
 const { computeWanderTarget } = require("./companion/idle-life");
 const {
+  createContextReactionEngine,
+  feedEngineFromSnapshot,
+} = require("./companion/context-reactions");
+const {
   buildFileDropState,
   executeFileDropAction,
 } = require("./file-drop-actions");
@@ -1293,6 +1297,64 @@ function moveWindowBy(dx) {
   const target = computeWanderTarget(bounds, wa, dx);
   applyPetWindowBounds({ ...bounds, x: target.x, y: target.y });
   syncHitWin();
+}
+
+// ── Context-Aware Companion: reaction engine ──
+// Fed from the live session/usage snapshot on a low-frequency loop and drained
+// only while the pet is idle (so context reactions never fight agent states or
+// idle-life). Reactions play through the same render channel as click reactions.
+const _contextEngine = createContextReactionEngine({});
+let _contextEnginePrev;
+let _contextReactionUntil = 0;
+let _contextLoopTimer = null;
+
+function getDailyTokens() {
+  try {
+    const snap = getUsageSnapshot({ days: 1 });
+    return snap && snap.today ? Number(snap.today.total_tokens) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function feedContextEngine() {
+  try {
+    _contextEnginePrev = feedEngineFromSnapshot(_contextEngine, {
+      snapshot: _state.buildSessionSnapshot(),
+      dominantState: _state.getCurrentState(),
+      dailyTokens: getDailyTokens(),
+    }, _contextEnginePrev);
+  } catch (err) {
+    console.warn("Clawd: context engine feed failed:", err && err.message);
+  }
+}
+
+function drainContextReaction() {
+  if (Date.now() < _contextReactionUntil) return;
+  if (doNotDisturb || _mini.getMiniMode()) return;
+  if (_state.getCurrentState() !== "idle") return;
+  if (_tickCtx && _tickCtx._idleLifeActive) return;
+  const theme = getActiveTheme();
+  const map = theme && theme.contextReactions;
+  if (!map) return;
+  const req = _contextEngine.takePending();
+  if (!req) return;
+  const entry = map[req.actionId];
+  if (!entry || !entry.file) return;
+  const duration = Number(entry.duration) || 3000;
+  sendToRenderer("play-click-reaction", entry.file, duration);
+  sendToHitWin("hit-state-sync", { currentSvg: entry.file });
+  _contextReactionUntil = Date.now() + duration + 300;
+}
+
+function startContextReactionLoop() {
+  if (_contextLoopTimer) return;
+  const loop = () => {
+    feedContextEngine();
+    drainContextReaction();
+    _contextLoopTimer = setTimeout(loop, 2500);
+  };
+  _contextLoopTimer = setTimeout(loop, 2500);
 }
 
 const _tickCtx = {
@@ -2624,6 +2686,7 @@ function createWindow() {
 
   initFocusHelper();
   startMainTick();
+  startContextReactionLoop();
   startHttpServer();
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state

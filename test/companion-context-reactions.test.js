@@ -3,7 +3,10 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { createContextReactionEngine } = require("../src/companion/context-reactions");
+const {
+  createContextReactionEngine,
+  feedEngineFromSnapshot,
+} = require("../src/companion/context-reactions");
 
 const MIN = 60000;
 
@@ -102,6 +105,42 @@ describe("context-reactions: token milestone", () => {
     assert.strictEqual(engine.takePending(), null); // same boundary
     engine.onSessionEvent({ type: "usage", dailyTokens: 200000 });
     assert.deepStrictEqual(engine.takePending(), { actionId: "celebration" });
+  });
+});
+
+describe("feedEngineFromSnapshot adapter", () => {
+  function recordingEngine() {
+    const events = [];
+    return { events, onSessionEvent: (e) => events.push(e) };
+  }
+
+  it("emits sessionStart for new ids and sessionEnd for removed ids", () => {
+    const eng = recordingEngine();
+    let prev = feedEngineFromSnapshot(eng, { snapshot: { sessions: [{ id: "a" }, { id: "b" }] } });
+    assert.deepStrictEqual(
+      eng.events.filter((e) => e.type === "sessionStart").map((e) => e.id).sort(),
+      ["a", "b"],
+    );
+    eng.events.length = 0;
+    prev = feedEngineFromSnapshot(eng, { snapshot: { sessions: [{ id: "b" }] } }, prev);
+    assert.deepStrictEqual(eng.events, [{ type: "sessionEnd", id: "a" }]);
+  });
+
+  it("forwards dominant state and daily tokens", () => {
+    const eng = recordingEngine();
+    feedEngineFromSnapshot(eng, { snapshot: { sessions: [] }, dominantState: "working", dailyTokens: 12345 });
+    assert.ok(eng.events.some((e) => e.type === "state" && e.state === "working"));
+    assert.ok(eng.events.some((e) => e.type === "usage" && e.dailyTokens === 12345));
+  });
+
+  it("end-to-end: a session ending makes bye-wave available to the real engine", () => {
+    let t = 0;
+    const engine = createContextReactionEngine({ now: () => t });
+    let prev = feedEngineFromSnapshot(engine, { snapshot: { sessions: [{ id: "s1" }] }, dominantState: "working" }, undefined);
+    engine.takePending(); // consume good-morning
+    t += 1000;
+    feedEngineFromSnapshot(engine, { snapshot: { sessions: [] }, dominantState: "idle" }, prev);
+    assert.deepStrictEqual(engine.takePending(), { actionId: "bye-wave" });
   });
 });
 

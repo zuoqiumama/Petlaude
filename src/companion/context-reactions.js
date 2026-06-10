@@ -166,4 +166,36 @@ function createContextReactionEngine(options = {}) {
   return { onSessionEvent, takePending };
 }
 
-module.exports = { createContextReactionEngine, defaultConfigs, PRIORITY, BUSY_STATES };
+// ── Snapshot adapter ─────────────────────────────────────────────────────────
+// Maps the app's existing session snapshot + dominant state + usage into engine
+// events, diffing session ids against the previous tick to emit start/end.
+// Pure (engine injected). Returns the new `prev` to thread into the next call.
+function feedEngineFromSnapshot(engine, { snapshot, dominantState, dailyTokens } = {}, prev) {
+  const sessions = (snapshot && Array.isArray(snapshot.sessions)) ? snapshot.sessions : [];
+  const ids = new Set();
+  for (const s of sessions) {
+    if (s && s.id != null) ids.add(s.id);
+  }
+  const prevIds = (prev && prev.ids) || new Set();
+  for (const id of ids) {
+    if (!prevIds.has(id)) engine.onSessionEvent({ type: "sessionStart", id });
+  }
+  for (const id of prevIds) {
+    if (!ids.has(id)) engine.onSessionEvent({ type: "sessionEnd", id });
+  }
+  if (typeof dominantState === "string" && dominantState) {
+    engine.onSessionEvent({ type: "state", state: dominantState });
+  }
+  if (Number.isFinite(dailyTokens)) {
+    engine.onSessionEvent({ type: "usage", dailyTokens });
+  }
+  return { ids };
+}
+
+module.exports = {
+  createContextReactionEngine,
+  defaultConfigs,
+  feedEngineFromSnapshot,
+  PRIORITY,
+  BUSY_STATES,
+};
