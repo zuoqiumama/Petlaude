@@ -116,3 +116,6 @@ bento-grid/
 
 # QA screenshots / scratch area
 scratch/
+
+# Image-gen API test (temporary, contains secrets)
+_imggen-test/
