@@ -755,6 +755,47 @@ h1 {
   margin-top: 12px;
 }
 
+.usage-rate-window-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.usage-rate-window-row {
+  display: grid;
+  gap: 6px;
+}
+
+.usage-rate-window-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.usage-rate-window-source {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.usage-rate-window-resets {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-rate-window-bar > span {
+  background: linear-gradient(90deg, #38bdf8, #6b7fff);
+}
+
+.usage-rate-window-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.usage-rate-window-stats .muted { color: var(--muted); }
+
 .usage-project-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

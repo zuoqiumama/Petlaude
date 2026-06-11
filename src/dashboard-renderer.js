@@ -1385,6 +1385,64 @@ function createQuotaSection() {
   return section;
 }
 
+function formatClockTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+
+// Always anchored to "now" (not the selected period): it answers "how much of
+// my current 5-hour subscription window have I used".
+function createRateWindowPanel() {
+  const windows = Array.isArray(usageSnapshot && usageSnapshot.rateWindows)
+    ? usageSnapshot.rateWindows
+    : [];
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-rate-window-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", t("usageRateWindowTitle")));
+  if (!windows.length) {
+    panel.appendChild(createText("div", "usage-empty", t("usageRateWindowIdle")));
+    return panel;
+  }
+  const list = document.createElement("div");
+  list.className = "usage-rate-window-list";
+  windows.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "usage-rate-window-row";
+    const head = document.createElement("div");
+    head.className = "usage-rate-window-head";
+    head.appendChild(createText("span", "usage-rate-window-source", sourceLabel(entry.source)));
+    const resets = t("usageRateWindowResets")
+      .replace("{time}", formatClockTime(entry.end))
+      .replace("{left}", formatUsageDuration(entry.remainingMs));
+    head.appendChild(createText("span", "usage-rate-window-resets", resets));
+    row.appendChild(head);
+    const bar = document.createElement("span");
+    bar.className = "usage-model-bar usage-rate-window-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(2, Math.round((entry.elapsedRatio || 0) * 100))}%`;
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    const stats = document.createElement("div");
+    stats.className = "usage-rate-window-stats";
+    stats.appendChild(createText("span", "", `${formatCompactNumber(entry.tokens)} tokens`));
+    stats.appendChild(createText("span", "muted", formatCost(entry.costUsd)));
+    if (entry.peakTokens > 0 && entry.peakTokens !== entry.tokens) {
+      stats.appendChild(createText(
+        "span",
+        "muted",
+        t("usageRateWindowPeak").replace("{n}", formatCompactNumber(entry.peakTokens))
+      ));
+    }
+    row.appendChild(stats);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
 function createUsageSection() {
   const { config, days, usage } = getUsageView();
   const totals = usage.totals || {};
@@ -1405,6 +1463,7 @@ function createUsageSection() {
   summary.appendChild(createMetric("Conversations", formatCompactNumber(metricConversations(totals)), `${formatCompactNumber(totals.tokenEvents)} events`));
   section.appendChild(summary);
 
+  section.appendChild(createRateWindowPanel());
   section.appendChild(createProviderOverview(usage));
   section.appendChild(createStatsPanel(usage));
 
