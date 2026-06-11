@@ -1,6 +1,7 @@
 "use strict";
 
 const { computeUsageCost } = require("./usage-pricing");
+const { computeRateLimitWindows } = require("./usage-rate-window");
 
 const CANONICAL_USAGE_SCHEMA = "clawd-usage-v2";
 
@@ -667,6 +668,28 @@ function serializeMonthEntry(entry) {
   return serializeUsageEntry(entry, "month");
 }
 
+// Half-hour buckets are the densest aggregation we keep, and rate-limit
+// windows always start/end on whole hours, so per-source bucket totals
+// reconstruct window membership exactly (see usage-rate-window.js).
+function rateWindowActivities(buckets) {
+  const rows = [];
+  for (const entry of buckets.values()) {
+    const at = Date.parse(entry.bucket);
+    if (!Number.isFinite(at)) continue;
+    for (const source of entry.sources.values()) {
+      const tokens = Number(source.tokens) || 0;
+      if (tokens <= 0) continue;
+      rows.push({
+        at,
+        source: source.source,
+        tokens,
+        costUsd: Number(source.costUsd) || 0,
+      });
+    }
+  }
+  return rows;
+}
+
 function buildHourlyTrend(buckets, at) {
   const currentBucket = Math.floor(at / HALF_HOUR_MS) * HALF_HOUR_MS;
   const rows = [];
@@ -1125,6 +1148,7 @@ function createUsageAnalytics(options = {}) {
         last30d: rollingWindow(projected, at, 30, "last30d"),
       },
       heatmap: buildHeatmap(projected, at),
+      rateWindows: computeRateLimitWindows(rateWindowActivities(buckets), { now: at }),
       projects: serializeAggregateEntry(last30Aggregate).projects,
       costAnalysis: buildCostAnalysis(last30Aggregate),
       contextBreakdown: buildContextBreakdown(last30Aggregate),

@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld("dashboardAPI", {
   getQuotaLimits: () => ipcRenderer.invoke("dashboard:get-quota-limits"),
   setQuotaLimit: (payload) => ipcRenderer.invoke("dashboard:set-quota-limit", payload),
   detectAgentPlans: () => ipcRenderer.invoke("dashboard:detect-agent-plans"),
+  saveImage: (payload) => ipcRenderer.invoke("dashboard:save-image", payload),
+  copyImage: (payload) => ipcRenderer.invoke("dashboard:copy-image", payload),
   focusSession: (sessionId) => ipcRenderer.send("dashboard:focus-session", sessionId),
   hideSession: (sessionId) => ipcRenderer.invoke("dashboard:hide-session", sessionId),
   setSessionAlias: (payload) => ipcRenderer.invoke("dashboard:set-session-alias", payload),

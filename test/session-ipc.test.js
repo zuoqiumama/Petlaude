@@ -71,6 +71,8 @@ function createHarness(overrides = {}) {
       calls.push(["ackSessionCompletion", sessionId]);
       return true;
     }),
+    saveImage: overrides.saveImage,
+    copyImage: overrides.copyImage,
   });
   return { ipcMain, runtime, calls };
 }
@@ -79,10 +81,15 @@ test("session IPC registers owned channels and disposes them", () => {
   const { ipcMain, runtime } = createHarness();
 
   assert.deepStrictEqual([...ipcMain.handlers.keys()].sort(), [
+    "dashboard:copy-image",
+    "dashboard:detect-agent-plans",
     "dashboard:get-i18n",
+    "dashboard:get-quota-limits",
     "dashboard:get-snapshot",
     "dashboard:get-usage-snapshot",
     "dashboard:hide-session",
+    "dashboard:save-image",
+    "dashboard:set-quota-limit",
     "dashboard:set-session-alias",
     "session-hud:get-i18n",
     "session:ack-completion",
@@ -266,4 +273,33 @@ test("main forwards dashboard open source options into session IPC", () => {
   assert.match(mainSource, /recordUsageEvent/);
   assert.match(mainSource, /getUsageSnapshot/);
   assert.match(mainSource, /broadcastUsageSnapshot/);
+});
+
+test("session IPC delegates image export and defaults to not implemented", async () => {
+  const saved = [];
+  const { ipcMain } = createHarness({
+    saveImage: async (payload) => {
+      saved.push(payload);
+      return { status: "ok", filePath: "C:/tmp/report.png" };
+    },
+    copyImage: (payload) => {
+      saved.push(payload);
+      return { status: "ok" };
+    },
+  });
+
+  const saveResult = await ipcMain.invoke("dashboard:save-image", {
+    dataUrl: "data:image/png;base64,AAAA",
+    fileName: "weekly.png",
+  });
+  assert.deepStrictEqual(saveResult, { status: "ok", filePath: "C:/tmp/report.png" });
+  const copyResult = await ipcMain.invoke("dashboard:copy-image", {
+    dataUrl: "data:image/png;base64,AAAA",
+  });
+  assert.deepStrictEqual(copyResult, { status: "ok" });
+  assert.strictEqual(saved.length, 2);
+
+  const bare = createHarness();
+  const fallback = await bare.ipcMain.invoke("dashboard:save-image", {});
+  assert.strictEqual(fallback.status, "error");
 });

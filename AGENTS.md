@@ -106,6 +106,9 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/visible-margins.js` | 可视角色边距与 edge pinning 规则 |
 | `src/updater.js` | Git 模式 / `electron-updater` 双路径更新逻辑 |
 | `src/pricing-updater.js` | 运行时模型定价自动获取（LiteLLM + OpenRouter）、缓存/TTL/调度，调 `usage-pricing.reloadPricing`；curated 永远优先 |
+| `src/usage-ledger-compact.js` | usage ledger 启动压缩：370 天外条目折叠成每月汇总，幂等、原子重写 |
+| `src/usage-rate-window.js` | 5 小时限额窗口估算（ccusage block 约定），从半小时 bucket 重建，进 snapshot `rateWindows` |
+| `src/usage-weekly-report.js` | 周报数据构建 + canvas 卡片绘制（双环境：dashboard `<script>` 与 require），经 `dashboard:save-image` / `copy-image` 导出 PNG |
 | `src/focus.js` | 终端聚焦 |
 | `src/hit-renderer.js` + `src/hit-geometry.js` | 输入窗口命中、拖拽、连击反应 |
 | `src/remote-ssh-runtime.js` | Remote SSH 连接状态机、SSH / health probe、重试、Codex monitor 生命周期 |

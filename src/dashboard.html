@@ -755,6 +755,78 @@ h1 {
   margin-top: 12px;
 }
 
+.usage-rate-window-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.usage-rate-window-row {
+  display: grid;
+  gap: 6px;
+}
+
+.usage-rate-window-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.usage-rate-window-source {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.usage-rate-window-resets {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-rate-window-bar > span {
+  background: linear-gradient(90deg, #38bdf8, #6b7fff);
+}
+
+.usage-rate-window-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.usage-rate-window-stats .muted { color: var(--muted); }
+
+.usage-weekly-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.usage-weekly-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-weekly-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-weekly-button {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.usage-weekly-canvas {
+  display: block;
+  width: min(360px, 100%);
+  margin: 14px auto 4px;
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
 .usage-project-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1595,6 +1667,7 @@ button:disabled {
     <main id="content" class="content" aria-live="polite"></main>
   </div>
 </div>
+<script src="./usage-weekly-report.js"></script>
 <script src="./dashboard-renderer.js"></script>
 </body>
 </html>

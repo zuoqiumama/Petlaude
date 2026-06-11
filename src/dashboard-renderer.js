@@ -1385,6 +1385,159 @@ function createQuotaSection() {
   return section;
 }
 
+function formatClockTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+
+// Always anchored to "now" (not the selected period): it answers "how much of
+// my current 5-hour subscription window have I used".
+function createRateWindowPanel() {
+  const windows = Array.isArray(usageSnapshot && usageSnapshot.rateWindows)
+    ? usageSnapshot.rateWindows
+    : [];
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-rate-window-panel";
+  panel.appendChild(createText("h3", "usage-panel-title", t("usageRateWindowTitle")));
+  if (!windows.length) {
+    panel.appendChild(createText("div", "usage-empty", t("usageRateWindowIdle")));
+    return panel;
+  }
+  const list = document.createElement("div");
+  list.className = "usage-rate-window-list";
+  windows.forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = "usage-rate-window-row";
+    const head = document.createElement("div");
+    head.className = "usage-rate-window-head";
+    head.appendChild(createText("span", "usage-rate-window-source", sourceLabel(entry.source)));
+    const resets = t("usageRateWindowResets")
+      .replace("{time}", formatClockTime(entry.end))
+      .replace("{left}", formatUsageDuration(entry.remainingMs));
+    head.appendChild(createText("span", "usage-rate-window-resets", resets));
+    row.appendChild(head);
+    const bar = document.createElement("span");
+    bar.className = "usage-model-bar usage-rate-window-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(2, Math.round((entry.elapsedRatio || 0) * 100))}%`;
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    const stats = document.createElement("div");
+    stats.className = "usage-rate-window-stats";
+    stats.appendChild(createText("span", "", `${formatCompactNumber(entry.tokens)} tokens`));
+    stats.appendChild(createText("span", "muted", formatCost(entry.costUsd)));
+    if (entry.peakTokens > 0 && entry.peakTokens !== entry.tokens) {
+      stats.appendChild(createText(
+        "span",
+        "muted",
+        t("usageRateWindowPeak").replace("{n}", formatCompactNumber(entry.peakTokens))
+      ));
+    }
+    row.appendChild(stats);
+    list.appendChild(row);
+  });
+  panel.appendChild(list);
+  return panel;
+}
+
+function weeklyCardColors() {
+  const styles = getComputedStyle(document.documentElement);
+  const pick = (name, fallback) => {
+    const value = styles.getPropertyValue(name).trim();
+    return value || fallback;
+  };
+  return {
+    bg: pick("--surface", "#161a22"),
+    surface: pick("--surface-alt", "#1f2531"),
+    text: pick("--text", "#f3f5f9"),
+    muted: pick("--muted", "#8b93a7"),
+    accent: pick("--accent-vivid", "#d4945c"),
+    bar: "#6b7fff",
+  };
+}
+
+function createWeeklyReportPanel() {
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-weekly-panel";
+  const head = document.createElement("div");
+  head.className = "usage-weekly-head";
+  head.appendChild(createText("h3", "usage-panel-title", t("usageWeeklyTitle")));
+  const reportApi = window.UsageWeeklyReport;
+  if (!reportApi) {
+    panel.appendChild(head);
+    return panel;
+  }
+
+  const report = reportApi.buildWeeklyReport(usageSnapshot || {});
+  const canvas = document.createElement("canvas");
+  canvas.className = "usage-weekly-canvas";
+  reportApi.drawWeeklyCard(canvas, report, {
+    t,
+    lang: (i18nPayload && i18nPayload.lang) || "en",
+    colors: weeklyCardColors(),
+    formatters: {
+      tokens: formatCompactNumber,
+      cost: formatCost,
+      duration: formatUsageDuration,
+    },
+  });
+
+  const status = createText("span", "usage-weekly-status", "");
+  let statusTimer = null;
+  const setStatus = (text) => {
+    status.textContent = text;
+    if (statusTimer) clearTimeout(statusTimer);
+    if (text) {
+      statusTimer = setTimeout(() => {
+        status.textContent = "";
+      }, 2500);
+    }
+  };
+  const makeButton = (label, onClick) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "usage-weekly-button";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await onClick();
+      } catch {
+        setStatus(t("usageWeeklySaveFailed"));
+      } finally {
+        button.disabled = false;
+      }
+    });
+    return button;
+  };
+
+  const actions = document.createElement("div");
+  actions.className = "usage-weekly-actions";
+  actions.appendChild(status);
+  actions.appendChild(makeButton(t("usageWeeklyCopy"), async () => {
+    const result = await window.dashboardAPI.copyImage({
+      dataUrl: canvas.toDataURL("image/png"),
+    });
+    setStatus(result && result.status === "ok" ? t("usageWeeklyCopied") : t("usageWeeklySaveFailed"));
+  }));
+  actions.appendChild(makeButton(t("usageWeeklySave"), async () => {
+    const result = await window.dashboardAPI.saveImage({
+      dataUrl: canvas.toDataURL("image/png"),
+      fileName: `petlaude-weekly-${report.range.endDay || "report"}.png`,
+    });
+    if (result && result.status === "ok") setStatus(t("usageWeeklySaved"));
+    else if (result && result.status === "canceled") setStatus("");
+    else setStatus(t("usageWeeklySaveFailed"));
+  }));
+  head.appendChild(actions);
+  panel.appendChild(head);
+  panel.appendChild(canvas);
+  return panel;
+}
+
 function createUsageSection() {
   const { config, days, usage } = getUsageView();
   const totals = usage.totals || {};
@@ -1405,6 +1558,7 @@ function createUsageSection() {
   summary.appendChild(createMetric("Conversations", formatCompactNumber(metricConversations(totals)), `${formatCompactNumber(totals.tokenEvents)} events`));
   section.appendChild(summary);
 
+  section.appendChild(createRateWindowPanel());
   section.appendChild(createProviderOverview(usage));
   section.appendChild(createStatsPanel(usage));
 
@@ -1427,6 +1581,8 @@ function createUsageSection() {
   heatPanel.appendChild(heatStats);
   heatPanel.appendChild(createActivityDepth(heatmap));
   section.appendChild(heatPanel);
+
+  section.appendChild(createWeeklyReportPanel());
 
   const agentsPanel = document.createElement("div");
   agentsPanel.className = "usage-panel";
