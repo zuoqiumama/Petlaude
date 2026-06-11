@@ -14,6 +14,7 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { createUsageAnalytics, encodeLedgerEntry } = require("./usage-analytics");
+const { compactLedgerLines } = require("./usage-ledger-compact");
 const { createPricingUpdater } = require("./pricing-updater");
 const { registerPricingIpc } = require("./pricing-ipc");
 const { buildLitellmPerMillionMap } = require("./usage-pricing/matcher");
@@ -1161,12 +1162,28 @@ function getUsageSnapshot(options = {}) {
   return usageAnalytics.getSnapshot(options);
 }
 
+const USAGE_LEDGER_KEEP_DAYS = 370;
+
 function initUsageLedger() {
   try {
     usageLedgerPath = path.join(app.getPath("userData"), "usage-ledger.jsonl");
     if (!fs.existsSync(usageLedgerPath)) return;
     const text = fs.readFileSync(usageLedgerPath, "utf8");
-    usageAnalytics.loadLedgerLines(text.split(/\r?\n/), { keepOpenSessions: false });
+    let lines = text.split(/\r?\n/);
+    try {
+      // Fold entries older than the analytics window into monthly summaries
+      // so the ledger (and this startup replay) stops growing unboundedly.
+      const compacted = compactLedgerLines(lines, { keepDays: USAGE_LEDGER_KEEP_DAYS });
+      lines = compacted.lines;
+      if (compacted.changed) {
+        const tmp = `${usageLedgerPath}.tmp`;
+        fs.writeFileSync(tmp, lines.length ? `${lines.join("\n")}\n` : "", "utf8");
+        fs.renameSync(tmp, usageLedgerPath);
+      }
+    } catch (err) {
+      console.warn("Clawd: usage ledger compaction skipped:", err && err.message);
+    }
+    usageAnalytics.loadLedgerLines(lines, { keepOpenSessions: false });
   } catch (err) {
     console.warn("Clawd: failed to load usage ledger:", err && err.message);
   }
