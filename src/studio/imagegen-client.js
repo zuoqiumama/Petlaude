@@ -1,16 +1,19 @@
 "use strict";
 
 // ── Image-gen client ─────────────────────────────────────────────────────────
-// Provider-agnostic client for OpenAI-compatible image generation endpoints
-// (POST <baseUrl>/v1/images/generations). The API key is sent only in the
-// Authorization header and is never logged. `httpPost` is injectable for tests;
-// the default uses Node https.
+// Client for OpenAI-compatible image endpoints. Prompt-only requests use
+// /images/generations; reference-image requests use multipart /images/edits.
+// GPT Image returns base64 image data by default, while older compatible
+// providers may still return a URL, so both response shapes are accepted.
 //
 // generateImage(params, deps?) → Promise<string imageUrl>
 
 const https = require("https");
 
-const MAX_RESPONSE_BYTES = 256 * 1024; // JSON response (url, not image bytes)
+// GPT Image returns the generated PNG inside JSON as base64 by default. Keep
+// enough headroom for the runtime's 24 MB decoded-image limit plus base64 and
+// JSON overhead.
+const MAX_RESPONSE_BYTES = 40 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 240000;
 
 function typedError(code, message) {
@@ -28,7 +31,7 @@ function defaultHttpPost(url, { headers, body, timeoutMs = DEFAULT_TIMEOUT_MS } 
       reject(typedError("IMAGEGEN_BAD_URL", `invalid url: ${url}`));
       return;
     }
-    const data = Buffer.from(body || "", "utf8");
+    const data = Buffer.isBuffer(body) ? body : Buffer.from(body || "", "utf8");
     const req = https.request(
       {
         method: "POST",
@@ -69,7 +72,7 @@ function requireStr(value, name) {
   return value.trim();
 }
 
-function parseImageUrl(text) {
+function parseImageSource(text) {
   let json;
   try {
     json = JSON.parse(text);
@@ -78,8 +81,50 @@ function parseImageUrl(text) {
   }
   const entry = json && Array.isArray(json.data) ? json.data[0] : null;
   const url = entry && typeof entry.url === "string" ? entry.url : null;
-  if (!url) throw typedError("IMAGEGEN_NO_IMAGE", "response contained no image url");
-  return url;
+  if (url) return url;
+  const encoded = entry && typeof entry.b64_json === "string" ? entry.b64_json : null;
+  if (encoded) {
+    const format = String(json.output_format || json.format || "png").toLowerCase();
+    const mime = format === "jpg" || format === "jpeg" ? "image/jpeg" : `image/${format}`;
+    return `data:${mime};base64,${encoded}`;
+  }
+  throw typedError("IMAGEGEN_NO_IMAGE", "response contained no image payload");
+}
+
+function parseDataUrl(value, index) {
+  const match = /^data:(image\/(?:png|jpeg|jpg|webp));base64,([a-z0-9+/=\r\n]+)$/i.exec(String(value || ""));
+  if (!match) throw typedError("IMAGEGEN_BAD_IMAGE", `images[${index}] must be a base64 image data URL`);
+  const mime = match[1].toLowerCase() === "image/jpg" ? "image/jpeg" : match[1].toLowerCase();
+  const data = Buffer.from(match[2].replace(/\s+/g, ""), "base64");
+  if (data.length === 0) throw typedError("IMAGEGEN_BAD_IMAGE", `images[${index}] is empty`);
+  const ext = mime === "image/jpeg" ? "jpg" : mime.slice("image/".length);
+  return { mime, data, filename: `reference-${index + 1}.${ext}` };
+}
+
+function buildMultipartBody({ model, prompt, size, images }) {
+  const boundary = `----clawd-studio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const parts = [];
+  function push(value) {
+    parts.push(Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8"));
+  }
+  function field(name, value) {
+    push(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+  }
+  field("model", model);
+  field("prompt", prompt);
+  field("size", size);
+  field("output_format", "png");
+  images.forEach((value, index) => {
+    const image = parseDataUrl(value, index);
+    push(`--${boundary}\r\nContent-Disposition: form-data; name="image[]"; filename="${image.filename}"\r\nContent-Type: ${image.mime}\r\n\r\n`);
+    push(image.data);
+    push("\r\n");
+  });
+  push(`--${boundary}--\r\n`);
+  return {
+    body: Buffer.concat(parts),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
 }
 
 async function generateImage(params = {}, deps = {}) {
@@ -99,26 +144,34 @@ async function generateImage(params = {}, deps = {}) {
     throw typedError("IMAGEGEN_INSECURE_URL", "baseUrl must use https");
   }
 
-  const body = JSON.stringify({
-    model,
-    prompt,
-    image: Array.isArray(params.images) ? params.images : [],
-    size: params.size || "1024x1024",
-    response_format: "url",
-  });
+  const images = Array.isArray(params.images) ? params.images.filter(Boolean) : [];
+  const size = params.size || "1024x1024";
+  let endpoint;
+  let body;
+  let contentType;
+  if (images.length > 0) {
+    endpoint = "edits";
+    const multipart = buildMultipartBody({ model, prompt, size, images });
+    body = multipart.body;
+    contentType = multipart.contentType;
+  } else {
+    endpoint = "generations";
+    body = JSON.stringify({ model, prompt, size, output_format: "png" });
+    contentType = "application/json";
+  }
 
-  const res = await httpPost(`${baseUrl}/v1/images/generations`, {
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+  const res = await httpPost(`${baseUrl}/v1/images/${endpoint}`, {
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": contentType },
     body,
     timeoutMs: params.timeoutMs,
   });
 
-  if (!res || res.status !== 200) {
+  if (!res || res.status < 200 || res.status >= 300) {
     const status = res ? res.status : "no response";
     // Note: deliberately does not include the request (which carries the key).
     throw typedError("IMAGEGEN_HTTP_ERROR", `image generation failed (HTTP ${status})`);
   }
-  return parseImageUrl(res.text);
+  return parseImageSource(res.text);
 }
 
-module.exports = { generateImage };
+module.exports = { generateImage, MAX_RESPONSE_BYTES };

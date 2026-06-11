@@ -65,6 +65,7 @@ function createOffscreenRuntime(deps = {}) {
     processStrip: (payload) => run("processStrip", payload),
     makeGuide: (payload) => run("makeGuide", payload),
     prepareReference: (payload) => run("prepareReference", payload),
+    chooseChroma: (payload) => run("chooseChroma", payload),
     dispose() {
       ipcMain.removeListener("studio-offscreen-result", onResult);
       if (win && !win.isDestroyed()) win.destroy();

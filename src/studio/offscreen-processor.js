@@ -73,6 +73,22 @@ async function prepareReference(payload) {
   return { dataUrl: cv.toDataURL("image/png"), width: w, height: h };
 }
 
+async function chooseChroma(payload) {
+  const im = await decode(payload.dataUrl);
+  cv.width = im.naturalWidth;
+  cv.height = im.naturalHeight;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(im, 0, 0);
+  const raw = ctx.getImageData(0, 0, cv.width, cv.height);
+  const rgb = window.ClawdFrameExtract.chooseChromaKey(
+    { data: raw.data, width: raw.width, height: raw.height },
+    payload.candidates,
+    payload.threshold,
+  );
+  const hex = `#${rgb.map((v) => Number(v).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  return { rgb, hex };
+}
+
 window.offscreenAPI.onJob(async (job) => {
   const { id, channel, payload } = job || {};
   try {
@@ -80,6 +96,7 @@ window.offscreenAPI.onJob(async (job) => {
     if (channel === "processStrip") data = await processStrip(payload);
     else if (channel === "makeGuide") data = makeGuide(payload);
     else if (channel === "prepareReference") data = await prepareReference(payload);
+    else if (channel === "chooseChroma") data = await chooseChroma(payload);
     else throw new Error(`unknown channel: ${channel}`);
     window.offscreenAPI.result(id, data);
   } catch (err) {

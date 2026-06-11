@@ -35,6 +35,31 @@
     return out;
   }
 
+  function chooseChromaKey(image, candidates, threshold = 100) {
+    const keys = Array.isArray(candidates) && candidates.length
+      ? candidates
+      : [[0, 255, 0], [255, 0, 255], [0, 255, 255]];
+    const t2 = threshold * threshold;
+    let best = keys[0];
+    let bestConflicts = Infinity;
+    for (const key of keys) {
+      if (!Array.isArray(key) || key.length !== 3) continue;
+      let conflicts = 0;
+      for (let i = 0; i < image.data.length; i += 4) {
+        if (image.data[i + 3] <= 16) continue;
+        const dr = image.data[i] - key[0];
+        const dg = image.data[i + 1] - key[1];
+        const db = image.data[i + 2] - key[2];
+        if (dr * dr + dg * dg + db * db <= t2) conflicts += 1;
+      }
+      if (conflicts < bestConflicts) {
+        best = key;
+        bestConflicts = conflicts;
+      }
+    }
+    return [...best];
+  }
+
   function connectedComponents(image, alphaMin = 16) {
     const { width: w, height: h, data } = image;
     const visited = new Uint8Array(w * h);
@@ -206,6 +231,7 @@
 
   return {
     removeChroma,
+    chooseChromaKey,
     connectedComponents,
     contentBBox,
     crop,

@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { slugify, ensurePetTheme } = require("../src/studio/pet-theme");
+const themeLoader = require("../src/theme-loader");
 
 const TEMPLATE_DIR = path.join(__dirname, "..", "themes", "template");
 
@@ -29,11 +30,17 @@ describe("slugify", () => {
     assert.strictEqual(slugify("My Cool Pet!"), "my-cool-pet");
     assert.strictEqual(slugify("  Foo__Bar  "), "foo-bar");
   });
+
+  it("keeps non-Latin pet names stable and distinct", () => {
+    assert.match(slugify("小白"), /^pet-[a-z0-9]+$/);
+    assert.notStrictEqual(slugify("小白"), slugify("小黑"));
+  });
 });
 
 describe("ensurePetTheme", () => {
   it("clones the template, patches metadata, copies the reference as idle", () => {
-    const userThemesDir = tmpDir();
+    const userDataDir = tmpDir();
+    const userThemesDir = path.join(userDataDir, "themes");
     const referencePath = tmpReference();
     const { themeDir, themeId } = ensurePetTheme({
       name: "Pixel Buddy",
@@ -50,6 +57,50 @@ describe("ensurePetTheme", () => {
     // reference copied into assets and wired as idle
     assert.ok(fs.existsSync(path.join(themeDir, "assets", "reference.png")));
     assert.deepStrictEqual(theme.states.idle, ["reference.png"]);
+    assert.deepStrictEqual(theme.states.working, ["reference.png"]);
+    assert.deepStrictEqual(theme.states.thinking, ["reference.png"]);
+    assert.strictEqual(theme.eyeTracking.enabled, false);
+    assert.ok(!theme.workingTiers, "template-only tiers removed");
+    assert.ok(!theme.reactions, "template-only reactions removed");
+
+    themeLoader.init(path.join(__dirname, "..", "src"), userDataDir);
+    const validation = themeLoader.validateThemeShape(themeId);
+    assert.deepStrictEqual(validation.errors, []);
+    assert.strictEqual(validation.ok, true);
+  });
+
+  it("preserves a supported reference extension instead of relabeling bytes as PNG", () => {
+    const userThemesDir = tmpDir();
+    const referencePath = path.join(tmpDir(), "ref.webp");
+    fs.writeFileSync(referencePath, Buffer.from("webp-bytes"));
+    const { themeDir } = ensurePetTheme({
+      name: "Web Pet", referencePath, userThemesDir, templateDir: TEMPLATE_DIR,
+    });
+    const theme = JSON.parse(fs.readFileSync(path.join(themeDir, "theme.json"), "utf8"));
+    assert.deepStrictEqual(theme.states.idle, ["reference.webp"]);
+    assert.ok(fs.existsSync(path.join(themeDir, "assets", "reference.webp")));
+  });
+
+  it("avoids built-in theme ids", () => {
+    const result = ensurePetTheme({
+      name: "Clawd", referencePath: tmpReference(), userThemesDir: tmpDir(), templateDir: TEMPLATE_DIR,
+    });
+    assert.strictEqual(result.themeId, "clawd-custom");
+  });
+
+  it("does not overwrite an unrelated user theme with the same slug", () => {
+    const userThemesDir = tmpDir();
+    const existingDir = path.join(userThemesDir, "my-pet");
+    fs.mkdirSync(path.join(existingDir, "assets"), { recursive: true });
+    const original = { schemaVersion: 1, name: "Existing Theme", author: "Someone Else" };
+    fs.writeFileSync(path.join(existingDir, "theme.json"), JSON.stringify(original));
+
+    const result = ensurePetTheme({
+      name: "My Pet", referencePath: tmpReference(), userThemesDir, templateDir: TEMPLATE_DIR,
+    });
+
+    assert.strictEqual(result.themeId, "my-pet-studio");
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(existingDir, "theme.json"), "utf8")), original);
   });
 
   it("is idempotent (second call returns the same dir without error)", () => {
@@ -58,5 +109,24 @@ describe("ensurePetTheme", () => {
     const a = ensurePetTheme({ name: "Dup", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
     const b = ensurePetTheme({ name: "Dup", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
     assert.strictEqual(a.themeDir, b.themeDir);
+  });
+
+  it("drops old template reaction placeholders while preserving generated touch reactions", () => {
+    const userThemesDir = tmpDir();
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "Repair", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    theme.reactions = {
+      drag: { file: "missing-template.gif" },
+      rapidClick: { file: "dizzy.svg", duration: 2500 },
+    };
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "Repair", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.deepStrictEqual(repaired.reactions, {
+      rapidClick: { file: "dizzy.svg", duration: 2500 },
+    });
   });
 });

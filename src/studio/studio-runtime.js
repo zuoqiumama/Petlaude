@@ -27,9 +27,19 @@ const { GEN_VIEWBOX } = require("./pet-theme");
 const CELL_SIZE = 512;
 const CHROMA_THRESHOLD = 100; // validated against gpt-image-2 output in _imggen-test
 const GUIDE_SAFE_MARGIN = 26;
+const CHROMA_CANDIDATES = Object.freeze([
+  Object.freeze([0, 255, 0]),
+  Object.freeze([255, 0, 255]),
+  Object.freeze([0, 255, 255]),
+  Object.freeze([0, 0, 255]),
+]);
 
 function hexToRgb(hex) {
   return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+}
+
+function rgbToHex(rgb) {
+  return `#${rgb.map((value) => Number(value).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
 }
 
 // Image APIs accept a small set of sizes; pick the one closest to the grid's
@@ -51,6 +61,35 @@ function fileToDataUrl(filePath) {
   const ext = path.extname(filePath).replace(".", "").toLowerCase() || "png";
   const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : `image/${ext}`;
   return `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
+}
+
+function validateExtraction(action, extracted) {
+  const frames = Array.isArray(extracted && extracted.frames) ? extracted.frames.slice(0, action.frames) : [];
+  if (frames.length < action.frames) {
+    throw new Error(`extraction produced ${frames.length}/${action.frames} frames for ${action.id}`);
+  }
+  const report = Array.isArray(extracted && extracted.report) ? extracted.report : [];
+  for (let i = 0; i < Math.min(report.length, action.frames); i += 1) {
+    const frame = report[i] || {};
+    const blank = !(Number(frame.rawW) > 0) || !(Number(frame.rawH) > 0);
+    const sparse = Number.isFinite(Number(frame.opaquePct)) && Number(frame.opaquePct) < 0.2;
+    if (blank || sparse) {
+      throw new Error(`extracted frame ${i + 1} is blank or too sparse for ${action.id}`);
+    }
+  }
+  return frames;
+}
+
+function decodePngFrame(frame, actionId, index) {
+  const match = /^data:image\/png;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(frame || ""));
+  if (!match) {
+    throw new Error(`extracted frame ${index + 1} is not a PNG data URL for ${actionId}`);
+  }
+  const bytes = Buffer.from(match[1].replace(/\s+/g, ""), "base64");
+  if (bytes.length === 0) {
+    throw new Error(`extracted frame ${index + 1} is empty for ${actionId}`);
+  }
+  return bytes;
 }
 
 // Merge one generated action into the theme config (pure: returns a new object).
@@ -111,8 +150,7 @@ function createStudioRuntime(options = {}) {
   const processor = deps.processor;
   if (!processor) throw new Error("createStudioRuntime requires deps.processor");
 
-  const chroma = options.chroma || CHROMA;
-  const chromaRgb = hexToRgb(chroma);
+  const explicitChroma = options.chroma || null;
 
   function emit(actionId, stage, extra) {
     try {
@@ -140,10 +178,33 @@ function createStudioRuntime(options = {}) {
     return raw;
   }
 
+  let _chromaPromise = null;
+  function getChroma() {
+    if (_chromaPromise) return _chromaPromise;
+    _chromaPromise = (async () => {
+      if (explicitChroma) return { hex: explicitChroma, rgb: hexToRgb(explicitChroma) };
+      if (typeof processor.chooseChroma === "function") {
+        try {
+          const selected = await processor.chooseChroma({
+            dataUrl: await getReferenceDataUrl(),
+            candidates: CHROMA_CANDIDATES.map((rgb) => [...rgb]),
+            threshold: CHROMA_THRESHOLD,
+          });
+          if (selected && Array.isArray(selected.rgb) && selected.rgb.length === 3) {
+            return { rgb: selected.rgb.map(Number), hex: selected.hex || rgbToHex(selected.rgb) };
+          }
+        } catch { /* fall back to the default green key */ }
+      }
+      return { hex: CHROMA, rgb: hexToRgb(CHROMA) };
+    })();
+    return _chromaPromise;
+  }
+
   async function generateAction(actionId) {
     const action = getAction(actionId);
     if (!action) throw new Error(`unknown action: ${actionId}`);
     emit(actionId, "start");
+    const chroma = await getChroma();
 
     // 1. Layout guide for this action's grid (rasterized in the offscreen
     // window). Guide cells must share the OUTPUT size's aspect — a square
@@ -165,7 +226,7 @@ function createStudioRuntime(options = {}) {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       model: config.model,
-      prompt: buildPrompt(action, chroma),
+      prompt: buildPrompt(action, chroma.hex),
       images: [await getReferenceDataUrl(), guide.dataUrl],
       size,
       _actionId: actionId,
@@ -179,29 +240,32 @@ function createStudioRuntime(options = {}) {
       stripDataUrl,
       cols: action.grid.cols,
       rows: action.grid.rows,
-      key: chromaRgb,
+      key: chroma.rgb,
       threshold: CHROMA_THRESHOLD,
       cell: CELL_SIZE,
       _actionId: actionId,
     });
-    const frames = (extracted.frames || []).slice(0, action.frames);
-    if (frames.length < action.frames) {
-      throw new Error(`extraction produced ${frames.length}/${action.frames} frames for ${actionId}`);
-    }
+    const frames = validateExtraction(action, extracted);
     emit(actionId, "extracted", { report: extracted.report });
 
-    // 4. Assemble the animated SVG asset.
+    // 4. Store frames beside the SVG. User-theme sanitization intentionally
+    // strips data: URLs, so embedding frames would make the animation blank.
+    const assetFile = `${action.id}.svg`;
+    const frameFiles = frames.map((_, index) => `${action.id}-frame-${index + 1}.png`);
+    const frameBytes = frames.map((frame, index) => decodePngFrame(frame, action.id, index));
     const svg = assembleAnimatedSvg({
-      frames,
+      frames: frameFiles,
       anim: action.anim,
       viewBox: GEN_VIEWBOX,
     });
     emit(actionId, "assembled");
 
-    // 5. Atomic writes: asset first, then the theme.json patch.
-    const assetFile = `${action.id}.svg`;
+    // 5. Atomic writes: frame assets and SVG first, then the theme.json patch.
     const assetsDir = path.join(themeDir, "assets");
     fs.mkdirSync(assetsDir, { recursive: true });
+    for (let index = 0; index < frameFiles.length; index += 1) {
+      atomicWrite(path.join(assetsDir, frameFiles[index]), frameBytes[index]);
+    }
     atomicWrite(path.join(assetsDir, assetFile), svg);
 
     const themeJsonPath = path.join(themeDir, "theme.json");
@@ -234,6 +298,13 @@ function createStudioRuntime(options = {}) {
 const MAX_IMAGE_BYTES = 24 * 1024 * 1024;
 
 function defaultDownloadImage(url, timeoutMs = 120000) {
+  const dataMatch = /^data:image\/(?:png|jpeg|jpg|webp);base64,([a-z0-9+/=\r\n]+)$/i.exec(String(url || ""));
+  if (dataMatch) {
+    const data = Buffer.from(dataMatch[1].replace(/\s+/g, ""), "base64");
+    if (data.length > MAX_IMAGE_BYTES) return Promise.reject(new Error("downloaded image too large"));
+    if (data.length === 0) return Promise.reject(new Error("generated image was empty"));
+    return Promise.resolve(data);
+  }
   const https = require("https");
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers: { "User-Agent": "clawd-on-desk-studio" } }, (res) => {

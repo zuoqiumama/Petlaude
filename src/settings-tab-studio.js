@@ -27,7 +27,8 @@
     badgeEls: new Map(),  // actionId -> badge element (live while tab mounted)
     apiStatus: "",        // last save/test status line
     progressUnsub: null,
-    seq: 0,
+    cfgRequested: false,  // getConfig() in flight or done (fire once)
+    actionsRequested: false, // getActions() in flight or done (fire once)
   };
 
   const STAGE_ORDER = ["start", "generated", "extracted", "assembled", "written"];
@@ -39,22 +40,35 @@
 
   function t(key) { return helpers.t(key); }
 
+  // Fetch config and the action manifest exactly once each. Each request guards
+  // its own in-flight flag so a re-render triggered by one resolving (e.g.
+  // getConfig) never re-issues — or invalidates — the other. (A shared sequence
+  // counter here caused an infinite render loop: getConfig resolved first, its
+  // re-render bumped the counter, and the still-pending getActions was discarded
+  // as stale on every pass, so actions never loaded and render() kept retrying.)
   function loadInitial() {
     if (!window.studioAPI) return;
-    const seq = ++view.seq;
-    window.studioAPI.getConfig().then((cfg) => {
-      if (seq !== view.seq) return;
-      view.cfg = cfg;
-      view.cfgLoaded = true;
-      ops.requestRender({ content: true });
-    }).catch(() => {});
-    if (!view.actions) {
+    if (!view.cfgRequested) {
+      view.cfgRequested = true;
+      window.studioAPI.getConfig().then((cfg) => {
+        view.cfg = cfg;
+        view.cfgLoaded = true;
+        ops.requestRender({ content: true });
+      }).catch(() => { view.cfgRequested = false; });
+    }
+    if (!view.actionsRequested) {
+      view.actionsRequested = true;
       window.studioAPI.getActions().then((actions) => {
-        if (seq !== view.seq) return;
         view.actions = actions;
         ops.requestRender({ content: true });
-      }).catch(() => {});
+      }).catch(() => { view.actionsRequested = false; });
     }
+  }
+
+  function refreshConfig() {
+    view.cfgRequested = false;
+    view.cfgLoaded = false;
+    loadInitial();
   }
 
   function subscribeProgress() {
@@ -188,34 +202,44 @@
     actionRow.control.appendChild(testBtn);
     actionRow.control.appendChild(saveBtn);
 
-    saveBtn.addEventListener("click", () => {
+    saveBtn.addEventListener("click", async () => {
       const d = getDraft();
       saveBtn.disabled = true;
-      window.studioAPI.saveConfig({ baseUrl: d.baseUrl, model: d.model, apiKey: d.apiKey }).then((res) => {
-        saveBtn.disabled = false;
+      try {
+        const res = await window.studioAPI.saveConfig({ baseUrl: d.baseUrl, model: d.model, apiKey: d.apiKey });
         if (res && res.status === "ok") {
           view.apiStatus = res.keyPersisted === false && d.apiKey
             ? t("studioKeyNotPersisted")
             : t("studioSaved");
           view.draft = null;
-          loadInitial();
+          refreshConfig();
         } else {
           view.apiStatus = (res && res.message) || t("toastSaveFailed");
         }
         statusDesc.textContent = view.apiStatus;
-      });
+      } catch (err) {
+        view.apiStatus = (err && err.message) || t("toastSaveFailed");
+        statusDesc.textContent = view.apiStatus;
+      } finally {
+        saveBtn.disabled = false;
+      }
     });
 
-    testBtn.addEventListener("click", () => {
+    testBtn.addEventListener("click", async () => {
       testBtn.disabled = true;
       statusDesc.textContent = "…";
-      window.studioAPI.testConfig().then((res) => {
-        testBtn.disabled = false;
+      try {
+        const res = await window.studioAPI.testConfig();
         view.apiStatus = res && res.status === "ok"
           ? (res.note ? `${t("studioTestOk")} (${res.note})` : t("studioTestOk"))
           : ((res && res.message) || t("studioTestFailed"));
         statusDesc.textContent = view.apiStatus;
-      });
+      } catch (err) {
+        view.apiStatus = (err && err.message) || t("studioTestFailed");
+        statusDesc.textContent = view.apiStatus;
+      } finally {
+        testBtn.disabled = false;
+      }
     });
 
     parent.appendChild(wrap);
@@ -240,22 +264,25 @@
     }
     const pickBtn = softBtn(t("studioPickImage"));
     pickRow.control.appendChild(pickBtn);
-    pickBtn.addEventListener("click", () => {
-      window.studioAPI.pickReference().then((res) => {
+    pickBtn.addEventListener("click", async () => {
+      try {
+        const res = await window.studioAPI.pickReference();
         if (res && res.status === "ok") {
           view.reference = { path: res.path, dataUrl: res.dataUrl };
           ops.requestRender({ content: true });
         } else if (res && res.status === "error") {
           ops.showToast(res.message, { error: true });
         }
-      });
+      } catch (err) {
+        ops.showToast((err && err.message) || t("toastSaveFailed"), { error: true });
+      }
     });
 
     parent.appendChild(wrap);
   }
 
   function canGenerate() {
-    return !!(view.cfg && view.cfg.hasKey && view.cfg.baseUrl && view.reference && !view.busy);
+    return !!(view.cfg && view.cfg.hasKey && view.cfg.baseUrl && view.cfg.model && view.reference && !view.busy);
   }
 
   function runGenerate(payload, badgeActionIds) {
@@ -284,8 +311,18 @@
           ops.showToast(t("studioDoneSwitchHint"));
         }
       } else {
+        for (const id of badgeActionIds) {
+          view.statuses.set(id, { stage: "error", error: (res && res.message) || "generation failed" });
+        }
         ops.showToast((res && res.message) || t("toastSaveFailed"), { error: true });
       }
+      ops.requestRender({ content: true });
+    }).catch((err) => {
+      view.busy = false;
+      for (const id of badgeActionIds) {
+        view.statuses.set(id, { stage: "error", error: (err && err.message) || "generation failed" });
+      }
+      ops.showToast((err && err.message) || t("toastSaveFailed"), { error: true });
       ops.requestRender({ content: true });
     });
   }

@@ -9,6 +9,7 @@ const {
   fitToCell,
   extractGrid,
   opaquePct,
+  chooseChromaKey,
 } = require("../src/studio/frame-extract");
 
 // Build an ImageData-like object from a w*h array of [r,g,b,a] pixels.
@@ -34,6 +35,18 @@ describe("removeChroma", () => {
     assert.strictEqual(getA(out, 1, 0), 255, "pink kept");
     // original untouched (immutability)
     assert.strictEqual(getA(im, 0, 0), 255);
+  });
+});
+
+describe("chooseChromaKey", () => {
+  it("avoids a key color already used heavily by the reference pet", () => {
+    const im = img(4, 4, [0, 255, 0, 255]);
+    const selected = chooseChromaKey(im, [
+      [0, 255, 0],
+      [255, 0, 255],
+      [0, 255, 255],
+    ], 100);
+    assert.deepStrictEqual(selected, [255, 0, 255]);
   });
 });
 

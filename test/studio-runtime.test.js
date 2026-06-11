@@ -9,6 +9,7 @@ const path = require("node:path");
 const { createStudioRuntime } = require("../src/studio/studio-runtime");
 const { ensurePetTheme } = require("../src/studio/pet-theme");
 const { getAction } = require("../src/companion/action-manifest");
+const themeLoader = require("../src/theme-loader");
 
 const TEMPLATE_DIR = path.join(__dirname, "..", "themes", "template");
 
@@ -32,7 +33,8 @@ function fakeFrames(n) {
 }
 
 function makeHarness({ failClient = false, failActions = [] } = {}) {
-  const userThemesDir = tmpDir();
+  const userDataDir = tmpDir();
+  const userThemesDir = path.join(userDataDir, "themes");
   const refPath = writeRef(tmpDir());
   const { themeDir, themeId } = ensurePetTheme({
     name: "Test Pet", referencePath: refPath, userThemesDir, templateDir: TEMPLATE_DIR,
@@ -79,7 +81,7 @@ function makeHarness({ failClient = false, failActions = [] } = {}) {
     onProgress: (e) => progress.push(e),
   });
 
-  return { runtime, themeDir, themeId, refPath, calls, progress };
+  return { runtime, themeDir, themeId, userDataDir, refPath, calls, progress };
 }
 
 function readTheme(themeDir) {
@@ -111,7 +113,17 @@ describe("studio-runtime generateAction", () => {
     const svgPath = path.join(h.themeDir, "assets", "yawn.svg");
     assert.ok(fs.existsSync(svgPath), "svg asset written");
     const svg = fs.readFileSync(svgPath, "utf8");
-    assert.ok(svg.includes("FRAME0") && svg.includes("FRAME3"), "frames embedded");
+    assert.match(svg, /href="yawn-frame-1\.png"/);
+    assert.match(svg, /href="yawn-frame-4\.png"/);
+    assert.doesNotMatch(svg, /data:image/, "external-theme sanitizer strips data URLs");
+    assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn-frame-1.png")));
+    assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn-frame-4.png")));
+
+    themeLoader.init(path.join(__dirname, "..", "src"), h.userDataDir);
+    const loaded = themeLoader.loadTheme(h.themeId, { strict: true });
+    const cachedSvg = path.join(loaded._assetsDir, "yawn.svg");
+    assert.ok(fs.existsSync(cachedSvg), "generated SVG survives external-theme loading");
+    assert.ok(fs.existsSync(path.join(loaded._assetsDir, "yawn-frame-1.png")), "frame dependency copied to cache");
 
     // theme.json patched into idleLife with the manifest trigger
     const theme = readTheme(h.themeDir);
@@ -162,6 +174,57 @@ describe("studio-runtime generateAction", () => {
   it("rejects unknown action ids", async () => {
     await assert.rejects(() => h.runtime.generateAction("nope"), /unknown action/);
   });
+
+  it("rejects blank extracted frames instead of writing a broken animation", async () => {
+    const bad = makeHarness();
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async () => "https://img/s.png",
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => ({
+            frames: fakeFrames(p.cols * p.rows),
+            report: Array.from({ length: p.cols * p.rows }, (_, i) => ({
+              rawW: i === 1 ? 0 : 100,
+              rawH: i === 1 ? 0 : 100,
+              opaquePct: i === 1 ? 0 : 20,
+            })),
+          }),
+        },
+      },
+    });
+    await assert.rejects(() => runtime.generateAction("yawn"), /frame 2.*blank|sparse/i);
+    assert.ok(!fs.existsSync(path.join(bad.themeDir, "assets", "yawn.svg")));
+  });
+
+  it("accepts a base64 data URL returned by GPT Image", async () => {
+    const good = makeHarness();
+    let stripDataUrl = "";
+    const runtime = createStudioRuntime({
+      themeDir: good.themeDir,
+      referencePath: good.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async () => "data:image/png;base64,UE5H",
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => {
+            stripDataUrl = p.stripDataUrl;
+            return {
+              frames: fakeFrames(p.cols * p.rows),
+              report: Array.from({ length: p.cols * p.rows }, () => ({ rawW: 100, rawH: 100, opaquePct: 20 })),
+            };
+          },
+        },
+      },
+    });
+    await runtime.generateAction("yawn");
+    assert.strictEqual(stripDataUrl, "data:image/png;base64,UE5H");
+  });
 });
 
 describe("studio-runtime reference + guide geometry", () => {
@@ -190,14 +253,44 @@ describe("studio-runtime reference + guide geometry", () => {
     assert.strictEqual(prepared[0], "data:image/png;base64,SMALLREF");
   });
 
-  it("guide cells match the output size aspect (3x1 grid → 512x1024 cells)", async () => {
+  it("uses a square 2x2 guide for three-frame actions", async () => {
     const h = makeHarness();
-    await h.runtime.generateAction("curious"); // 3x1 grid → 1536x1024 output
+    await h.runtime.generateAction("curious");
     const guide = h.calls.guides[0];
     assert.strictEqual(guide.cellW, 512);
-    assert.strictEqual(guide.cellH, 1024);
+    assert.strictEqual(guide.cellH, 512);
     const params = h.calls.client[0];
-    assert.strictEqual(params.size, "1536x1024");
+    assert.strictEqual(params.size, "1024x1024");
+  });
+
+  it("uses the reference-aware chroma choice for both prompting and extraction", async () => {
+    const h = makeHarness();
+    const generated = [];
+    const strips = [];
+    const runtime = createStudioRuntime({
+      themeDir: h.themeDir,
+      referencePath: h.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async (params) => { generated.push(params); return "https://img/s.png"; },
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          prepareReference: async () => ({ dataUrl: "data:image/png;base64,REF" }),
+          chooseChroma: async () => ({ rgb: [255, 0, 255], hex: "#FF00FF" }),
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => {
+            strips.push(p);
+            return {
+              frames: fakeFrames(p.cols * p.rows),
+              report: Array.from({ length: p.cols * p.rows }, () => ({ rawW: 100, rawH: 100, opaquePct: 20 })),
+            };
+          },
+        },
+      },
+    });
+    await runtime.generateAction("yawn");
+    assert.match(generated[0].prompt, /#FF00FF/);
+    assert.deepStrictEqual(strips[0].key, [255, 0, 255]);
   });
 });
 
