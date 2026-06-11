@@ -93,4 +93,12 @@ describe("buildPrompt", () => {
     assert.ok(prompt.includes("#FF00FF"), "override chroma");
     assert.ok(!prompt.includes("#00FF00"), "no default chroma when overridden");
   });
+
+  it("keeps props attached and explicitly leaves unused grid cells blank", () => {
+    const prompt = buildPrompt(getAction("smooth-thumbsup"));
+    assert.match(prompt, /remaining grid cell/i);
+    assert.match(prompt, /single connected silhouette/i);
+    assert.doesNotMatch(prompt, /sparkle near/i);
+    assert.deepStrictEqual(getAction("smooth-thumbsup").grid, { cols: 2, rows: 2 });
+  });
 });

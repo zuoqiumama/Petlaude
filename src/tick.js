@@ -231,10 +231,12 @@ function runMainTickOnce() {
         ? ctx.getPetWindowBounds()
         : ctx.win.getBounds();
     }
+    let hoverEntered = false;
     if (bounds && !ctx.dragLocked) {
       const hit = ctx.getHitRectScreen(bounds);
       const over = cursor.x >= hit.left && cursor.x <= hit.right
                 && cursor.y >= hit.top  && cursor.y <= hit.bottom;
+      hoverEntered = !ctx.mouseOverPet && over;
       ctx.mouseOverPet = over;
     }
 
@@ -279,10 +281,16 @@ function runMainTickOnce() {
         }
         // Mouse moved ⇒ cancel any in-flight idle-life behavior and restore the
         // idle-follow svg immediately (invariant #2: instant interruption).
-        if (ctx._idleLifeActive) cancelIdleLife(ctx);
+        const hoverStillActive = ctx._idleLifeBehavior && ctx._idleLifeBehavior.hover && ctx.mouseOverPet;
+        if (ctx._idleLifeActive && !hoverStillActive) cancelIdleLife(ctx);
       }
 
       const elapsed = Date.now() - mouseStillSince;
+
+      if (hoverEntered && idleLifeScheduler && !ctx._idleLifeActive) {
+        const played = maybePlayIdleLife(ctx, elapsed, idleLifeScheduler, { hover: true });
+        if (played) return nextDelay();
+      }
 
       // Startup recovery: Claude Code is running but no hook yet — stay awake
       // Only suppress sleep sequence, don't skip eye tracking below

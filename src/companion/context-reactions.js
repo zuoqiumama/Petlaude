@@ -192,10 +192,19 @@ function feedEngineFromSnapshot(engine, { snapshot, dominantState, dailyTokens }
   return { ids };
 }
 
+function resolveContextReactionEntry(map, actionId) {
+  if (!map || typeof map !== "object" || !actionId) return null;
+  if (map[actionId] && map[actionId].file) return map[actionId];
+  const action = getAction(actionId);
+  const triggerType = action && action.trigger && action.trigger.type;
+  return triggerType && map[triggerType] && map[triggerType].file ? map[triggerType] : null;
+}
+
 module.exports = {
   createContextReactionEngine,
   defaultConfigs,
   feedEngineFromSnapshot,
   PRIORITY,
   BUSY_STATES,
+  resolveContextReactionEntry,
 };

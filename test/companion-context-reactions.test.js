@@ -6,6 +6,7 @@ const assert = require("node:assert");
 const {
   createContextReactionEngine,
   feedEngineFromSnapshot,
+  resolveContextReactionEntry,
 } = require("../src/companion/context-reactions");
 
 const MIN = 60000;
@@ -160,5 +161,17 @@ describe("context-reactions: priority", () => {
     assert.deepStrictEqual(engine.takePending(), { actionId: "break-reminder" });
     assert.deepStrictEqual(engine.takePending(), { actionId: "celebration" });
     assert.deepStrictEqual(engine.takePending(), { actionId: "good-morning" });
+  });
+});
+
+describe("resolveContextReactionEntry", () => {
+  it("maps an engine action id to the trigger-keyed theme entry", () => {
+    const entry = { file: "comfort.svg", duration: 4000 };
+    assert.strictEqual(resolveContextReactionEntry({ errorStreak: entry }, "error-comfort"), entry);
+  });
+
+  it("keeps action-id keyed themes compatible", () => {
+    const entry = { file: "comfort.svg", duration: 4000 };
+    assert.strictEqual(resolveContextReactionEntry({ "error-comfort": entry }, "error-comfort"), entry);
   });
 });

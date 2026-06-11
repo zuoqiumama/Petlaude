@@ -89,6 +89,7 @@ describe("idle-life scheduler", () => {
       now: () => t, random: () => 0.1, hour: () => 12, cooldownMs: 0,
     });
     assert.strictEqual(sched.pick(999999), null, "hover-only never picked randomly");
+    assert.strictEqual(sched.pickHover().id, "curious", "hover picker can reach it");
   });
 });
 
@@ -118,11 +119,12 @@ describe("normalizeBehaviors", () => {
 describe("maybePlayIdleLife windowMove", () => {
   it("calls ctx.moveWindowBy with a signed magnitude inside dxRange", () => {
     const moves = [];
-    const ctx = fakeCtx({ moveWindowBy: (dx) => moves.push(dx), random: () => 0.5 });
+    const ctx = fakeCtx({ moveWindowBy: (...args) => moves.push(args), random: () => 0.5 });
     const behavior = { id: "wander", file: "w.svg", durationMs: 2500, windowMove: { dxRange: [50, 80] } };
     maybePlayIdleLife(ctx, 130000, { pick: () => behavior });
     assert.strictEqual(moves.length, 1);
-    assert.strictEqual(Math.abs(moves[0]), 65); // 50 + (80-50)*0.5
+    assert.strictEqual(Math.abs(moves[0][0]), 65); // 50 + (80-50)*0.5
+    assert.strictEqual(moves[0][1], 2500);
   });
 });
 
@@ -152,6 +154,15 @@ describe("maybePlayIdleLife", () => {
     const ctx = fakeCtx();
     assert.ok(maybePlayIdleLife(ctx, 130000, { pick: () => behavior }));
     assert.strictEqual(maybePlayIdleLife(ctx, 130000, { pick: () => behavior }), null);
+  });
+
+  it("plays a hover-only behavior through the hover picker", () => {
+    const ctx = fakeCtx();
+    const hover = { id: "curious", file: "curious.svg", durationMs: 2000, hover: true };
+    const played = maybePlayIdleLife(ctx, 0, { pickHover: () => hover }, { hover: true });
+    assert.strictEqual(played, hover);
+    assert.strictEqual(ctx._idleLifeBehavior, hover);
+    assert.deepStrictEqual(ctx.sends[0], ["state-change", "idle", "curious.svg"]);
   });
 
   it("cancelIdleLife clears the timer and restores idle-follow", () => {

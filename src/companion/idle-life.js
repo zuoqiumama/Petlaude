@@ -36,8 +36,10 @@ function createIdleLifeScheduler(options = {}) {
   const random = typeof options.random === "function" ? options.random : Math.random;
   const hour = typeof options.hour === "function" ? options.hour : () => new Date().getHours();
   const cooldownMs = Number.isFinite(options.cooldownMs) ? options.cooldownMs : 30000;
+  const hoverCooldownMs = Number.isFinite(options.hoverCooldownMs) ? options.hoverCooldownMs : 5000;
 
   let lastPickAt = -Infinity;
+  let lastHoverPickAt = -Infinity;
 
   function eligible(idleElapsedMs) {
     const h = hour();
@@ -59,11 +61,22 @@ function createIdleLifeScheduler(options = {}) {
     return chosen;
   }
 
-  function reset() {
-    lastPickAt = -Infinity;
+  function pickHover() {
+    if (now() - lastHoverPickAt < hoverCooldownMs) return null;
+    const candidates = behaviors.filter((b) => b && b.hover && b.file);
+    if (candidates.length === 0) return null;
+    const chosen = weightedPick(candidates, random);
+    if (!chosen) return null;
+    lastHoverPickAt = now();
+    return chosen;
   }
 
-  return { pick, reset };
+  function reset() {
+    lastPickAt = -Infinity;
+    lastHoverPickAt = -Infinity;
+  }
+
+  return { pick, pickHover, reset };
 }
 
 // Flatten theme `idleLife.behaviors` (with nested `trigger`) into the flat
@@ -104,11 +117,13 @@ function computeWanderTarget(bounds, workArea, dx) {
 // state-change path (currentState stays "idle"; only the SVG changes, so eye
 // tracking naturally pauses because currentSvg !== idle-follow). Arms a
 // self-managed return timer stored on ctx so cancelIdleLife() can clear it.
-function maybePlayIdleLife(ctx, idleElapsedMs, scheduler) {
+function maybePlayIdleLife(ctx, idleElapsedMs, scheduler, options = {}) {
   if (!ctx || !scheduler) return null;
   if (ctx.doNotDisturb || ctx.miniMode || ctx.currentState !== "idle") return null;
   if (ctx._idleLifeActive) return null; // one at a time
-  const behavior = scheduler.pick(idleElapsedMs);
+  const picker = options.hover ? scheduler.pickHover : scheduler.pick;
+  if (typeof picker !== "function") return null;
+  const behavior = options.hover ? picker.call(scheduler) : picker.call(scheduler, idleElapsedMs);
   if (!behavior) return null;
 
   const setTimer = typeof ctx.setTimeout === "function" ? ctx.setTimeout : setTimeout;
@@ -125,14 +140,16 @@ function maybePlayIdleLife(ctx, idleElapsedMs, scheduler) {
     const rng = typeof ctx.random === "function" ? ctx.random : Math.random;
     const mag = lo + (hi - lo) * rng();
     const dir = rng() < 0.5 ? -1 : 1;
-    ctx.moveWindowBy(Math.round(mag) * dir);
+    ctx.moveWindowBy(Math.round(mag) * dir, behavior.durationMs);
   }
 
   ctx._idleLifeActive = true;
+  ctx._idleLifeBehavior = behavior;
   const dur = Number.isFinite(behavior.durationMs) && behavior.durationMs > 0 ? behavior.durationMs : 3000;
   ctx._idleLifeReturnTimer = setTimer(() => {
     ctx._idleLifeReturnTimer = null;
     ctx._idleLifeActive = false;
+    ctx._idleLifeBehavior = null;
     // Only restore if we're still idle and not mid-state-change.
     if (ctx.currentState === "idle") {
       const follow = ctx.svgIdleFollow;
@@ -159,6 +176,7 @@ function cancelIdleLife(ctx, options = {}) {
   }
   const wasActive = ctx._idleLifeActive;
   ctx._idleLifeActive = false;
+  ctx._idleLifeBehavior = null;
   if (wasActive && options.restore !== false && ctx.currentState === "idle") {
     const follow = ctx.svgIdleFollow;
     if (follow && typeof ctx.sendToRenderer === "function") {

@@ -62,6 +62,7 @@ const { computeWanderTarget } = require("./companion/idle-life");
 const {
   createContextReactionEngine,
   feedEngineFromSnapshot,
+  resolveContextReactionEntry,
 } = require("./companion/context-reactions");
 const {
   buildFileDropState,
@@ -1155,6 +1156,11 @@ let usageLedgerPath = null;
 const pricingUpdater = createPricingUpdater({
   seed: buildLitellmPerMillionMap(pricingSeedSnapshot),
   getEnabled: () => _settingsController.get("pricingAutoFetch") !== false,
+  onPricingReloaded: () => {
+    usageAnalytics.reprice();
+    broadcastDashboardUsageSnapshot(getUsageSnapshot({ days: 370 }));
+    broadcastUsageHoverSnapshot(getUsageSnapshot({ days: 1 }));
+  },
 });
 
 function getUsageSnapshot(options = {}) {
@@ -1304,7 +1310,7 @@ function getSessionHudAnchorRect(bounds) { return petWindowRuntime.getSessionHud
 // move is tweened (ease-out, ~60fps) so the wander reads as walking instead of
 // a teleport; any drag/state change aborts mid-flight.
 let _wanderTimer = null;
-function moveWindowBy(dx) {
+function moveWindowBy(dx, requestedDurationMs) {
   if (_mini.getMiniMode() || petWindowRuntime.isDragLocked()) return;
   if (_state.getCurrentState() !== "idle") return;
   const bounds = getPetWindowBounds();
@@ -1316,7 +1322,9 @@ function moveWindowBy(dx) {
   if (_wanderTimer) { clearTimeout(_wanderTimer); _wanderTimer = null; }
   const startX = bounds.x;
   const startTime = Date.now();
-  const durationMs = 1400; // matches the wander walk-cycle pacing
+  const durationMs = Number.isFinite(requestedDurationMs) && requestedDurationMs > 0
+    ? requestedDurationMs
+    : 1400;
   const step = () => {
     _wanderTimer = null;
     if (_mini.getMiniMode() || petWindowRuntime.isDragLocked()
@@ -1381,7 +1389,7 @@ function drainContextReaction() {
   if (!map) return;
   const req = _contextEngine.takePending();
   if (!req) return;
-  const entry = map[req.actionId];
+  const entry = resolveContextReactionEntry(map, req.actionId);
   if (!entry || !entry.file) return;
   const duration = Number(entry.duration) || 3000;
   // Same channel as click reactions; the renderer's playReaction self-restores
@@ -2975,9 +2983,11 @@ if (!gotTheLock) {
     updateDebugLog = path.join(app.getPath("userData"), "update-debug.log");
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
-    initUsageLedger();
     registerPricingIpc({ ipcMain, updater: pricingUpdater });
+    // init() applies the on-disk pricing cache synchronously before starting
+    // any network work, so ledger replay below uses the freshest offline data.
     pricingUpdater.init();
+    initUsageLedger();
     app.once("will-quit", () => { try { pricingUpdater.stop(); } catch (_) {} });
     queueTelegramApprovalSidecarSync("startup");
     createWindow();

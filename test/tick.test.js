@@ -212,6 +212,36 @@ describe("tick mini hover", () => {
   });
 });
 
+describe("tick idle-life hover", () => {
+  it("plays a hover-only companion action when the cursor enters the pet", () => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const loader = loadTickWithScreen(() => ({ x: 40, y: 40 }));
+    const theme = cloneTheme(_defaultTheme);
+    theme.idleAnimations = [];
+    theme.idleLife = {
+      cooldownMs: 30000,
+      behaviors: [
+        { id: "curious", file: "curious.svg", duration: 2000, trigger: { hover: true } },
+      ],
+    };
+    const sends = [];
+    const ctx = makeCtx(theme, []);
+    ctx.sendToRenderer = (...args) => sends.push(args);
+    const tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    try {
+      mock.timers.tick(60);
+      assert.ok(sends.some((args) => args[0] === "state-change" && args[2] === "curious.svg"));
+      assert.strictEqual(ctx._idleLifeBehavior.id, "curious");
+    } finally {
+      tickApi.cleanup();
+      loader.restore();
+      mock.timers.reset();
+    }
+  });
+});
+
 describe("tick Cloudling pointer bridge", () => {
   let cursor;
   let loader;
