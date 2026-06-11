@@ -8,8 +8,9 @@ const {
 } = require("./matcher");
 
 const ZERO_PRICING = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-const litellmPerMillionMap = buildLitellmPerMillionMap(seedSnapshot);
-const negativeCache = new Set();
+let activeLitellmMap = buildLitellmPerMillionMap(seedSnapshot);
+let negativeCache = new Set();
+let pricingMeta = { lastFetchedAt: null, sources: {}, source: "seed" };
 
 function normalizeSource(value) {
   return typeof value === "string" && value.trim()
@@ -25,7 +26,7 @@ function getModelPricing(model, opts = {}) {
 
   const result = lookupPricing(model, {
     curated: curatedOverrides,
-    litellm: litellmPerMillionMap,
+    litellm: activeLitellmMap,
     source,
   });
   if (result.hit && result.value) {
@@ -39,6 +40,28 @@ function getModelPricing(model, opts = {}) {
 
   negativeCache.add(cacheKey);
   return ZERO_PRICING;
+}
+
+// Swap in a freshly-merged per-million map (built by remote-source) and clear
+// the negative cache, since new data may resolve models that previously missed.
+function reloadPricing(mergedPerMillionMap, meta = {}) {
+  if (mergedPerMillionMap && typeof mergedPerMillionMap === "object") {
+    activeLitellmMap = mergedPerMillionMap;
+  }
+  negativeCache = new Set();
+  pricingMeta = {
+    lastFetchedAt: meta.lastFetchedAt ?? pricingMeta.lastFetchedAt,
+    sources: meta.sources ?? pricingMeta.sources,
+    source: meta.source ?? "live",
+  };
+}
+
+function getPricingMeta() {
+  return {
+    lastFetchedAt: pricingMeta.lastFetchedAt,
+    sources: { ...pricingMeta.sources },
+    source: pricingMeta.source,
+  };
 }
 
 function hasPositivePricing(pricing) {
@@ -90,4 +113,6 @@ module.exports = {
   ZERO_PRICING,
   computeUsageCost,
   getModelPricing,
+  reloadPricing,
+  getPricingMeta,
 };
