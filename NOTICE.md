@@ -37,6 +37,14 @@ SOFTWARE.
 `src/usage-pricing/seed-snapshot.json`, and parts of the token normalization
 and pricing behavior are derived from TokenTracker.
 
+Runtime pricing data is fetched from two public sources by
+`src/pricing-updater.js`: the **LiteLLM** price list
+(<https://github.com/BerriAI/litellm>, MIT — also the origin of the bundled
+`seed-snapshot.json`) and the **OpenRouter** models API
+(<https://openrouter.ai/api/v1/models>) for models LiteLLM does not carry.
+Curated overrides always take precedence over fetched data, which is used only
+to estimate usage cost.
+
 TokenTracker is licensed under the MIT License:
 
 MIT License
