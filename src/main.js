@@ -14,6 +14,10 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { createUsageAnalytics, encodeLedgerEntry } = require("./usage-analytics");
+const { createPricingUpdater } = require("./pricing-updater");
+const { registerPricingIpc } = require("./pricing-ipc");
+const { buildLitellmPerMillionMap } = require("./usage-pricing/matcher");
+const pricingSeedSnapshot = require("./usage-pricing/seed-snapshot.json");
 const { createUsageModelResolver } = require("./usage-model-resolver");
 const { registerPetInteractionIpc } = require("./pet-interaction-ipc");
 const initPermission = require("./permission");
@@ -1143,6 +1147,15 @@ const usageAnalytics = createUsageAnalytics({
   resolveModelForEvent: usageModelResolver.resolveModelForEvent,
 });
 let usageLedgerPath = null;
+
+// Runtime model-pricing auto-fetch (LiteLLM + OpenRouter). Shares the
+// usage-pricing singleton usageAnalytics consumes, so reloadPricing() affects
+// cost math immediately. Curated overrides always win; bundled seed is the
+// offline fallback. init() is called once from app.whenReady().
+const pricingUpdater = createPricingUpdater({
+  seed: buildLitellmPerMillionMap(pricingSeedSnapshot),
+  getEnabled: () => _settingsController.get("pricingAutoFetch") !== false,
+});
 
 function getUsageSnapshot(options = {}) {
   return usageAnalytics.getSnapshot(options);
@@ -2963,6 +2976,16 @@ if (!gotTheLock) {
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
     initUsageLedger();
+    registerPricingIpc({
+      ipcMain,
+      updater: pricingUpdater,
+      setEnabled: (enabled) => {
+        _settingsController.applyUpdate("pricingAutoFetch", enabled);
+        if (enabled) pricingUpdater.maybeRefresh().catch(() => {});
+      },
+    });
+    pricingUpdater.init();
+    app.once("will-quit", () => { try { pricingUpdater.stop(); } catch (_) {} });
     queueTelegramApprovalSidecarSync("startup");
     createWindow();
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {

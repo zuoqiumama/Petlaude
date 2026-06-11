@@ -224,6 +224,9 @@ const updateRegistry = {
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
+  // Plain boolean: pricing auto-fetch on/off. Side-effects (kick refresh on
+  // enable, timer gating) live in the pricing IPC handler + updater, not here.
+  pricingAutoFetch: requireBoolean("pricingAutoFetch"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
