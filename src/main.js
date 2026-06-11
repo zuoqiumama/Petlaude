@@ -2577,6 +2577,33 @@ registerStudioIpc({
   },
 });
 
+const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+const MAX_EXPORT_IMAGE_BYTES = 24 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+function decodePngDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string" || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) return null;
+  const base64 = dataUrl.slice(PNG_DATA_URL_PREFIX.length);
+  // 4/3 base64 expansion: reject before decoding anything oversized.
+  if (base64.length > MAX_EXPORT_IMAGE_BYTES * 4 / 3 + 4) return null;
+  try {
+    const buffer = Buffer.from(base64, "base64");
+    if (buffer.length < PNG_MAGIC.length || !buffer.subarray(0, 4).equals(PNG_MAGIC)) return null;
+    return buffer;
+  } catch (_) {
+    return null;
+  }
+}
+
+function sanitizeExportFileName(fileName, fallback) {
+  const cleaned = String(fileName || "")
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "")
+    .trim()
+    .slice(0, 120);
+  if (!cleaned) return fallback;
+  return cleaned.toLowerCase().endsWith(".png") ? cleaned : `${cleaned}.png`;
+}
+
 registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
@@ -2627,6 +2654,34 @@ registerSessionIpc({
       }
     } catch (_) { /* credentials not found or unreadable */ }
     return result;
+  },
+  saveImage: async (payload) => {
+    const parsed = decodePngDataUrl(payload && payload.dataUrl);
+    if (!parsed) return { status: "error", message: "invalid image payload" };
+    const fileName = sanitizeExportFileName(payload && payload.fileName, "petlaude-export.png");
+    try {
+      const { canceled, filePath } = await dialog.showSaveDialog(_dashboard.getWindow() || undefined, {
+        defaultPath: path.join(app.getPath("downloads"), fileName),
+        filters: [{ name: "PNG", extensions: ["png"] }],
+      });
+      if (canceled || !filePath) return { status: "canceled" };
+      fs.writeFileSync(filePath, parsed);
+      return { status: "ok", filePath };
+    } catch (err) {
+      console.warn("Clawd: saveImage failed:", err && err.message);
+      return { status: "error", message: err && err.message };
+    }
+  },
+  copyImage: (payload) => {
+    const parsed = decodePngDataUrl(payload && payload.dataUrl);
+    if (!parsed) return { status: "error", message: "invalid image payload" };
+    try {
+      clipboard.writeImage(nativeImage.createFromBuffer(parsed));
+      return { status: "ok" };
+    } catch (err) {
+      console.warn("Clawd: copyImage failed:", err && err.message);
+      return { status: "error", message: err && err.message };
+    }
   },
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);

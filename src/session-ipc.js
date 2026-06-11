@@ -31,6 +31,8 @@ function registerSessionIpc(options = {}) {
   const getQuotaLimits = options.getQuotaLimits || (() => ({}));
   const setQuotaLimit = options.setQuotaLimit || (() => ({ status: "error", message: "not implemented" }));
   const detectAgentPlans = options.detectAgentPlans || (() => ({}));
+  const saveImage = options.saveImage || (() => ({ status: "error", message: "not implemented" }));
+  const copyImage = options.copyImage || (() => ({ status: "error", message: "not implemented" }));
 
   handle("dashboard:get-snapshot", () => getSessionSnapshot());
   handle("dashboard:get-usage-snapshot", () => getUsageSnapshot({ days: 370 }));
@@ -39,6 +41,8 @@ function registerSessionIpc(options = {}) {
   handle("dashboard:get-quota-limits", () => getQuotaLimits());
   handle("dashboard:set-quota-limit", (_event, payload) => setQuotaLimit(payload));
   handle("dashboard:detect-agent-plans", () => detectAgentPlans());
+  handle("dashboard:save-image", (_event, payload) => saveImage(payload));
+  handle("dashboard:copy-image", (_event, payload) => copyImage(payload));
   on("dashboard:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "dashboard" })
   );
