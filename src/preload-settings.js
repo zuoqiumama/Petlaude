@@ -140,6 +140,18 @@ contextBridge.exposeInMainWorld("doctor", {
   openClawdLog: () => ipcRenderer.invoke("doctor:open-clawd-log"),
 });
 
+// ── Model pricing auto-fetch ──
+//
+// Surface: window.pricing
+//   getStatus()          Promise<{ enabled, lastFetchedAt, sources }>
+//   refreshNow()         Promise<status> — manual refresh (ignores enabled/TTL)
+//   setEnabled(enabled)  Promise<status> — routes through settings controller
+contextBridge.exposeInMainWorld("pricing", {
+  getStatus: () => ipcRenderer.invoke("pricing:get-status"),
+  refreshNow: () => ipcRenderer.invoke("pricing:refresh-now"),
+  setEnabled: (enabled) => ipcRenderer.invoke("pricing:set-enabled", enabled),
+});
+
 // ── Remote SSH (Phase 2) ──
 //
 // Surface: window.remoteSsh

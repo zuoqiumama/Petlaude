@@ -27,6 +27,7 @@
     "workingStaleMs",
     "detachedIdleStaleMs",
     "appearanceMode",
+    "pricingAutoFetch",
   ]);
   const BUBBLE_POLICY_KEYS = new Set([
     "permissionBubblesEnabled",
@@ -173,6 +174,53 @@
         disabled: !manageClaudeHooksEnabled,
       }),
     ]));
+
+    // ── Model pricing auto-fetch (LiteLLM + OpenRouter) ──
+    const pricingStatusEl = document.createElement("span");
+    pricingStatusEl.className = "row-desc row-desc-extra";
+    const pricingStatusRow = document.createElement("div");
+    pricingStatusRow.className = "row";
+    pricingStatusRow.appendChild(pricingStatusEl);
+
+    function formatPricingStatus(status) {
+      if (!status) return t("rowPricingStatusNever");
+      const when = status.lastFetchedAt
+        ? new Date(status.lastFetchedAt).toLocaleString()
+        : t("rowPricingStatusNever");
+      const src = status.sources || {};
+      const tag = (s) => (s && s.ok ? "✓" : "✗");
+      return `${t("rowPricingLastUpdated")}: ${when} · LiteLLM ${tag(src.litellm)} · OpenRouter ${tag(src.openrouter)}`;
+    }
+    function refreshPricingStatusText() {
+      if (!window.pricing || typeof window.pricing.getStatus !== "function") {
+        pricingStatusEl.textContent = "";
+        return;
+      }
+      Promise.resolve(window.pricing.getStatus())
+        .then((status) => { pricingStatusEl.textContent = formatPricingStatus(status); })
+        .catch(() => { pricingStatusEl.textContent = ""; });
+    }
+    function runPricingRefresh() {
+      if (!window.pricing || typeof window.pricing.refreshNow !== "function") return;
+      pricingStatusEl.textContent = t("rowPricingRefreshing");
+      Promise.resolve(window.pricing.refreshNow())
+        .then((status) => { pricingStatusEl.textContent = formatPricingStatus(status); })
+        .catch(() => { refreshPricingStatusText(); });
+    }
+
+    parent.appendChild(helpers.buildSection(label("sectionPricing", "Model pricing"), [
+      helpers.buildSwitchRow({
+        key: "pricingAutoFetch",
+        labelKey: "rowPricingAutoFetch",
+        descKey: "rowPricingAutoFetchDesc",
+        actionButton: {
+          labelKey: "actionPricingRefresh",
+          invoke: () => runPricingRefresh(),
+        },
+      }),
+      pricingStatusRow,
+    ]));
+    refreshPricingStatusText();
 
     parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
       helpers.buildSwitchRow({

@@ -1929,6 +1929,7 @@ describe("settings renderer browser environment", () => {
       "Session management",
       "Double-click action",
       "Startup",
+      "Model pricing",
       "Bubbles",
     ]);
     assert.strictEqual(generalHarness.content.querySelector(".hardware-buddy-collapsible"), null);
