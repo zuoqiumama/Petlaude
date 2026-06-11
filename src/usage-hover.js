@@ -232,10 +232,19 @@ module.exports = function initUsageHover(ctx) {
   }
 
   function broadcastUsageSnapshot(snapshot) {
-    latestSnapshot = snapshot;
-    if (hoverWindow && !hoverWindow.isDestroyed() && hoverWindow.isVisible()) {
-      sendSnapshot(snapshot);
+    const visible = hoverWindow && !hoverWindow.isDestroyed() && hoverWindow.isVisible();
+    if (typeof snapshot === "function") {
+      if (!visible) {
+        // Drop the cached snapshot instead of resolving the thunk: the next
+        // hover recomputes via getCurrentSnapshot(), so we never pay for
+        // snapshots nobody is looking at.
+        latestSnapshot = null;
+        return;
+      }
+      snapshot = snapshot();
     }
+    latestSnapshot = snapshot;
+    if (visible) sendSnapshot(snapshot);
   }
 
   function repositionUsageHover() {

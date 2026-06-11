@@ -1186,8 +1186,10 @@ function recordUsageEvent(payload) {
   if (!payload || typeof payload !== "object") return;
   usageAnalytics.recordState(payload);
   appendUsageLedger(payload);
-  broadcastDashboardUsageSnapshot(getUsageSnapshot({ days: 370 }));
-  broadcastUsageHoverSnapshot(getUsageSnapshot({ days: 1 }));
+  // Thunks: the receivers only materialize a snapshot when their window can
+  // actually display it, so idle-time hook events stay cheap.
+  broadcastDashboardUsageSnapshot(() => getUsageSnapshot({ days: 370 }));
+  broadcastUsageHoverSnapshot(() => getUsageSnapshot({ days: 1 }));
 }
 
 // Forward hook for the #329 updater scheduler. State/mini ctxs reference

@@ -140,11 +140,22 @@ module.exports = function initDashboard(ctx) {
     dashboardWindow.webContents.send("dashboard:session-snapshot", snapshot);
   }
 
-  function sendUsageSnapshot(snapshot = getCurrentUsageSnapshot()) {
-    if (!snapshot) return;
-    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
-    dashboardWindow.webContents.send("dashboard:usage-snapshot", snapshot);
+  function canReceiveSnapshot() {
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+    if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return false;
+    return true;
+  }
+
+  function sendUsageSnapshot(snapshot) {
+    if (!canReceiveSnapshot()) return;
+    // Resolve thunks only after the window check so broadcasts from high
+    // frequency hook events skip the snapshot computation entirely while the
+    // dashboard is closed.
+    const resolved = typeof snapshot === "function"
+      ? snapshot()
+      : (snapshot === undefined ? getCurrentUsageSnapshot() : snapshot);
+    if (!resolved) return;
+    dashboardWindow.webContents.send("dashboard:usage-snapshot", resolved);
   }
 
   function sendI18n() {
