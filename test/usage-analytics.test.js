@@ -8,6 +8,7 @@ const {
   localDayKey,
   normalizeTokenUsage,
 } = require("../src/usage-analytics");
+const pricing = require("../src/usage-pricing");
 
 describe("normalizeTokenUsage", () => {
   it("accepts explicit input and output token fields", () => {
@@ -357,5 +358,29 @@ describe("createUsageAnalytics", () => {
 
     assert.strictEqual(snap.today.totals.sessionMs, 0);
     assert.strictEqual(snap.today.totals.activeMs, 0);
+  });
+
+  it("reprices previously recorded token events after the pricing index changes", () => {
+    const now = Date.parse("2026-05-28T11:00:00Z");
+    const model = "pricing-reload-regression-model";
+    const usage = createUsageAnalytics({ now: () => now });
+    usage.recordToken({
+      at: Date.parse("2026-05-28T10:00:00Z"),
+      agentId: "codex",
+      source: "codex",
+      model,
+      sessionId: "s1",
+      usageEventId: "pricing-reload-u1",
+      tokenUsage: { input_tokens: 1_000_000, total_tokens: 1_000_000 },
+    });
+    assert.strictEqual(usage.getSnapshot({ now, days: 1 }).today.totals.costUsd, 0);
+
+    pricing.reloadPricing({ [model]: { input: 2, output: 4 } });
+    usage.reprice();
+
+    const totals = usage.getSnapshot({ now, days: 1 }).today.totals;
+    assert.strictEqual(totals.costUsd, 2);
+    assert.strictEqual(totals.pricedTokens, 1_000_000);
+    assert.strictEqual(totals.unpricedTokens, 0);
   });
 });

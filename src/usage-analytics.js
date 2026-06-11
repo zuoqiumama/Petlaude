@@ -941,6 +941,8 @@ function createUsageAnalytics(options = {}) {
   const months = new Map();
   const sessions = new Map();
   const seenTokenEvents = new Set();
+  const replayOperations = [];
+  let replaying = false;
 
   function now() {
     return typeof options.now === "function" ? options.now() : Date.now();
@@ -972,7 +974,17 @@ function createUsageAnalytics(options = {}) {
     ].join("|");
   }
 
-  function recordToken(event = {}) {
+  function cloneReplayEvent(event, at) {
+    const cloned = { ...event, at };
+    for (const key of ["tokenUsage", "usage", "tokens"]) {
+      if (event[key] && typeof event[key] === "object") {
+        cloned[key] = { ...event[key] };
+      }
+    }
+    return cloned;
+  }
+
+  function recordToken(event = {}, { journal = true } = {}) {
     const session = sessions.get(sessionKey(event));
     let enrichedEvent = inheritUsageMetadata(event, session);
     if (!safeString(enrichedEvent.model) || enrichedEvent.model === "unknown") {
@@ -991,14 +1003,23 @@ function createUsageAnalytics(options = {}) {
     if (seenTokenEvents.has(key)) return false;
     seenTokenEvents.add(key);
     addToken({ days, buckets, months }, at, { ...enrichedEvent, source }, tokenUsage);
+    if (journal && !replaying) {
+      replayOperations.push({
+        type: "token",
+        event: cloneReplayEvent({ ...enrichedEvent, source }, at),
+      });
+    }
     return true;
   }
 
-  function recordState(event = {}) {
+  function recordState(event = {}, { journal = true } = {}) {
     const at = safeAt(event.at, now());
     const key = sessionKey(event);
     const existing = sessions.get(key);
     const usageEvent = event.tokenUsage ? inheritUsageMetadata(event, existing) : null;
+    if (journal && !replaying) {
+      replayOperations.push({ type: "state", event: cloneReplayEvent(event, at) });
+    }
     if (existing && at >= existing.at) {
       addDuration(days, existing.at, at, existing.agentId, "sessionMs");
       if (ACTIVE_STATES.has(existing.state)) {
@@ -1010,7 +1031,7 @@ function createUsageAnalytics(options = {}) {
     } else {
       sessions.set(key, sessionRecordFromEvent(event, existing, at));
     }
-    if (usageEvent) recordToken(usageEvent);
+    if (usageEvent) recordToken(usageEvent, { journal: false });
     return true;
   }
 
@@ -1028,6 +1049,30 @@ function createUsageAnalytics(options = {}) {
     }
     if (options.keepOpenSessions === false) {
       sessions.clear();
+      if (!replaying) replayOperations.push({ type: "clear-sessions" });
+    }
+  }
+
+  function reprice() {
+    const operations = replayOperations.slice();
+    days.clear();
+    buckets.clear();
+    months.clear();
+    sessions.clear();
+    seenTokenEvents.clear();
+    replaying = true;
+    try {
+      for (const operation of operations) {
+        if (operation.type === "clear-sessions") {
+          sessions.clear();
+        } else if (operation.type === "token") {
+          recordToken(operation.event, { journal: false });
+        } else if (operation.type === "state") {
+          recordState(operation.event, { journal: false });
+        }
+      }
+    } finally {
+      replaying = false;
     }
   }
 
@@ -1090,6 +1135,7 @@ function createUsageAnalytics(options = {}) {
     recordState,
     recordToken,
     loadLedgerLines,
+    reprice,
     getSnapshot,
   };
 }
