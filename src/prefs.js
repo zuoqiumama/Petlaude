@@ -38,7 +38,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 
-const CURRENT_VERSION = 8;
+const CURRENT_VERSION = 9;
 
 // ── Schema ──
 // Each field has: type, default OR defaultFactory, optional enum/normalize/validate.
@@ -87,6 +87,9 @@ const SCHEMA = {
   showTray: { type: "boolean", default: true },
   showDock: { type: "boolean", default: true },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
+  // Auto-fetch model pricing (LiteLLM + OpenRouter) at runtime. New key in v9;
+  // old prefs files default it on via validate() — no version-gated backfill needed.
+  pricingAutoFetch: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
   // System-backed: actual truth lives in OS login items / autostart files.
   // `openAtLoginHydrated` starts false; main.js's startup hydrate helper imports

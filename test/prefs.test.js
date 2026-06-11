@@ -45,6 +45,7 @@ describe("prefs.getDefaults", () => {
   it("defaults Claude hook management on and Start with Claude off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
+    assert.strictEqual(d.pricingAutoFetch, true);
     assert.strictEqual(d.autoStartWithClaude, false);
     assert.strictEqual(d.lowPowerIdleMode, false);
     assert.strictEqual(d.allowEdgePinning, false);
@@ -251,6 +252,8 @@ describe("prefs.validate", () => {
 
     assert.strictEqual(v.version, prefs.CURRENT_VERSION);
     assert.strictEqual(v.agents.pi.permissionsEnabled, false);
+    // New v9 key fills its default when migrating an old (v1) prefs file.
+    assert.strictEqual(v.pricingAutoFetch, true);
   });
 
   it("normalizes Telegram approval prefs without storing a token", () => {
