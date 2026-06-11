@@ -2976,14 +2976,7 @@ if (!gotTheLock) {
     sessionDebugLog = path.join(app.getPath("userData"), "session-debug.log");
     focusDebugLog = path.join(app.getPath("userData"), "focus-debug.log");
     initUsageLedger();
-    registerPricingIpc({
-      ipcMain,
-      updater: pricingUpdater,
-      setEnabled: (enabled) => {
-        _settingsController.applyUpdate("pricingAutoFetch", enabled);
-        if (enabled) pricingUpdater.maybeRefresh().catch(() => {});
-      },
-    });
+    registerPricingIpc({ ipcMain, updater: pricingUpdater });
     pricingUpdater.init();
     app.once("will-quit", () => { try { pricingUpdater.stop(); } catch (_) {} });
     queueTelegramApprovalSidecarSync("startup");

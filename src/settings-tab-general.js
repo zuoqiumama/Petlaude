@@ -213,6 +213,12 @@
         key: "pricingAutoFetch",
         labelKey: "rowPricingAutoFetch",
         descKey: "rowPricingAutoFetchDesc",
+        onToggle: ({ nextRaw }) => {
+          // Persist via the standard settings path; kick an immediate refresh
+          // when turning auto-fetch on (otherwise the daily timer handles it).
+          if (nextRaw) runPricingRefresh();
+          return window.settingsAPI.update("pricingAutoFetch", nextRaw);
+        },
         actionButton: {
           labelKey: "actionPricingRefresh",
           invoke: () => runPricingRefresh(),

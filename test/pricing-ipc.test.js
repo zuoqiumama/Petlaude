@@ -14,20 +14,18 @@ function fakeIpc() {
 }
 
 describe("pricing ipc", () => {
-  it("registers status/refresh/set-enabled and proxies to updater + controller", async () => {
+  it("registers status + refresh and proxies to the updater", async () => {
     const ipc = fakeIpc();
     const calls = [];
     const updater = {
       getStatus: () => ({ enabled: true, lastFetchedAt: "t", sources: { litellm: { ok: true } } }),
       refreshNow: async () => { calls.push("refresh"); return { enabled: true, lastFetchedAt: "t2", sources: {} }; },
     };
-    const setEnabled = (v) => { calls.push(`set:${v}`); };
-    registerPricingIpc({ ipcMain: ipc, updater, setEnabled });
+    registerPricingIpc({ ipcMain: ipc, updater });
 
-    assert.deepEqual(ipc._channels().sort(), ["pricing:get-status", "pricing:refresh-now", "pricing:set-enabled"]);
+    assert.deepEqual(ipc._channels().sort(), ["pricing:get-status", "pricing:refresh-now"]);
     assert.equal((await ipc._invoke("pricing:get-status")).enabled, true);
     assert.equal((await ipc._invoke("pricing:refresh-now")).lastFetchedAt, "t2");
-    await ipc._invoke("pricing:set-enabled", {}, false);
-    assert.deepEqual(calls, ["refresh", "set:false"]);
+    assert.deepEqual(calls, ["refresh"]);
   });
 });

@@ -149,7 +149,6 @@ contextBridge.exposeInMainWorld("doctor", {
 contextBridge.exposeInMainWorld("pricing", {
   getStatus: () => ipcRenderer.invoke("pricing:get-status"),
   refreshNow: () => ipcRenderer.invoke("pricing:refresh-now"),
-  setEnabled: (enabled) => ipcRenderer.invoke("pricing:set-enabled", enabled),
 });
 
 // ── Remote SSH (Phase 2) ──
