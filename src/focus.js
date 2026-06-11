@@ -231,7 +231,7 @@ function normalizeHwndString(value) {
   }
 }
 
-function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null) {
+function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, pidChain = null) {
   // Walk up the process tree (same proven logic as before).
   // Windows Terminal needs title matching because one WT process can represent
   // multiple tabs/windows. Other parent windows keep direct PID focus.
@@ -245,6 +245,8 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
   const titleNames = psNames ? `@(${psNames})` : "@()";
   const cacheKey = focusCacheKey ? psUtf8Expression(focusCacheKey) : "$null";
   const wtHwndLiteral = normalizeHwndString(wtHwnd) || "0";
+  const capturedPidChain = normalizePidChain(pidChain) || [];
+  const capturedPidChainLiteral = `@(${capturedPidChain.join(", ")})`;
   const parentWindowBlock = psNames ? `
         if ($wtProcessNames -contains $proc.ProcessName) {
             $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$titleNames))
@@ -328,17 +330,7 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
         } elseif ($pidWindows.Count -gt 1) {
             $reason = 'wt-title-mismatch-pid-window-ambiguous'
         } else {
-            $singleWtWindows = @(Get-ClawdWindowsTerminalWindows)
-            if ($singleWtWindows.Count -eq 1) {
-                [WinFocus]::Focus($singleWtWindows[0])
-                Save-ClawdFocusCache $singleWtWindows[0]
-                $focused = $true
-                $reason = 'wt-title-mismatch-single-wt-window'
-            } elseif ($singleWtWindows.Count -gt 1) {
-                $reason = 'wt-title-mismatch-single-wt-window-ambiguous'
-            } else {
-                $reason = 'wt-title-mismatch-no-pid-window'
-            }
+            $reason = 'wt-title-mismatch-no-pid-window'
         }
     }` : `
     $reason = 'no-parent-window-no-title'`;
@@ -347,6 +339,7 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
 $titleNames = ${titleNames}
 $wtProcessNames = @('WindowsTerminal', 'WindowsTerminalPreview')
 $chainWindowsTerminalPids = @()
+$capturedPidChain = ${capturedPidChainLiteral}
 $focusCacheKey = ${cacheKey}
 $wtHwndFromHook = [IntPtr]([int64]${wtHwndLiteral})
 if ($null -eq $global:ClawdFocusWindowCache) {
@@ -382,17 +375,6 @@ function Get-ClawdVisiblePidWindows([int[]]$pids) {
         }
     }
     return @($windows)
-}
-function Get-ClawdWindowsTerminalWindows() {
-    $wtPids = @()
-    foreach ($wtName in $wtProcessNames) {
-        foreach ($wtProc in @(Get-Process -Name $wtName -ErrorAction SilentlyContinue)) {
-            if ($wtProc -and $wtProc.Id -gt 0 -and -not ($wtPids -contains [int]$wtProc.Id)) {
-                $wtPids += [int]$wtProc.Id
-            }
-        }
-    }
-    return @(Get-ClawdVisiblePidWindows -pids $wtPids)
 }
 $curPid = ${sourcePid}
 $focused = $false
@@ -442,6 +424,37 @@ for ($i = 0; $i -lt 8; $i++) {
     $curPid = $cim.ParentProcessId
 }
 }
+# The hook source process is often short-lived. Use the captured process
+# chain to find a surviving terminal or desktop host before global guesses.
+if (-not $focused) {
+    foreach ($candidatePid in $capturedPidChain) {
+        $candidate = Get-Process -Id $candidatePid -ErrorAction SilentlyContinue
+        if (-not $candidate -or $candidate.ProcessName -eq 'explorer') { continue }
+        if ($wtProcessNames -contains $candidate.ProcessName) {
+            $candidateMatches = @([WinFocus]::FindByPidTitles([uint32]$candidatePid, [string[]]$titleNames))
+            if ($candidateMatches.Count -eq 1) {
+                [WinFocus]::Focus($candidateMatches[0])
+                Save-ClawdFocusCache $candidateMatches[0]
+                $focused = $true
+                $reason = 'captured-chain-wt-title'
+            } else {
+                $candidateWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$candidatePid))
+                if ($candidateWindows.Count -eq 1) {
+                    [WinFocus]::Focus($candidateWindows[0])
+                    Save-ClawdFocusCache $candidateWindows[0]
+                    $focused = $true
+                    $reason = 'captured-chain-wt-window'
+                }
+            }
+        } elseif ($candidate.MainWindowHandle -ne 0) {
+            [WinFocus]::Focus($candidate.MainWindowHandle)
+            Save-ClawdFocusCache $candidate.MainWindowHandle
+            $focused = $true
+            $reason = 'captured-chain-direct'
+        }
+        if ($focused) { break }
+    }
+}
 if (-not $focused -and $reason -eq 'no-parent-window') {${wtTitleMatch}
 }
 if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
@@ -452,7 +465,6 @@ if (-not $focused -and $pendingConsoleHwnd -ne [IntPtr]::Zero) {
         $reason -eq 'wt-parent-no-pid-window' -or
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-no-pid-window') {
         [WinFocus]::Focus($pendingConsoleHwnd)
         Save-ClawdFocusCache $pendingConsoleHwnd
@@ -468,7 +480,6 @@ if (-not $focused -and $consoleShimSkipped) {
         $reason -eq 'wt-parent-no-pid-window' -or
         $reason -eq 'wt-title-ambiguous' -or
         $reason -eq 'wt-title-mismatch-pid-window-ambiguous' -or
-        $reason -eq 'wt-title-mismatch-single-wt-window-ambiguous' -or
         $reason -eq 'wt-title-mismatch-no-pid-window') {
         $reason = 'console-window-shim-skip'
     }
@@ -495,18 +506,6 @@ if (-not $focused) {
         $directPid = $dcim.ParentProcessId
     }
 }
-# Last resort: find any WindowsTerminal process, grab its MainWindowHandle, and focus it
-if (-not $focused) {
-    $anyWt = Get-Process -Name 'WindowsTerminal','WindowsTerminalPreview' -ErrorAction SilentlyContinue |
-        Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if ($anyWt) {
-        try {
-            [WinFocus]::Focus($anyWt.MainWindowHandle)
-            $focused = $true
-            $reason = "direct-focus-any-wt:$($anyWt.Id)"
-        } catch { $reason = "direct-focus-error" }
-    }
-}
 # Absolute last resort: AppActivate (built-in .NET, no P/Invoke needed)
 if (-not $focused) {
     $aaAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() |
@@ -529,17 +528,6 @@ if (-not $focused) {
         $acim = Get-CimInstance Win32_Process -Filter "ProcessId=$aaPid" -ErrorAction SilentlyContinue
         if (-not $acim -or $acim.ParentProcessId -le 0 -or $acim.ParentProcessId -eq $aaPid) { break }
         $aaPid = $acim.ParentProcessId
-    }
-    if (-not $focused) {
-        $lastWt = Get-Process -Name 'WindowsTerminal','WindowsTerminalPreview' -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if ($lastWt) {
-            try {
-                [Microsoft.VisualBasic.Interaction]::AppActivate($lastWt.Id)
-                $focused = $true
-                $reason = "appactivate-any-wt:$($lastWt.Id)"
-            } catch { $reason = "appactivate-any-wt-error" }
-        }
     }
 }
 Write-ClawdFocusResult $reason
@@ -579,6 +567,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     const request = sourcePidOrRequest;
     return {
       sourcePid: normalizePid(request.sourcePid ?? request.source_pid),
+      agentPid: normalizePid(request.agentPid ?? request.agent_pid),
       cwd: typeof request.cwd === "string" ? request.cwd : "",
       editor: request.editor === "code" || request.editor === "cursor" ? request.editor : null,
       pidChain: normalizePidChain(request.pidChain ?? request.pid_chain),
@@ -591,6 +580,7 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
 
   return {
     sourcePid: normalizePid(sourcePidOrRequest),
+    agentPid: normalizePid(meta && (meta.agentPid ?? meta.agent_pid)),
     cwd: typeof cwd === "string" ? cwd : "",
     editor: editor === "code" || editor === "cursor" ? editor : null,
     pidChain: normalizePidChain(pidChain),
@@ -599,6 +589,15 @@ function normalizeFocusRequest(sourcePidOrRequest, cwd, editor, pidChain, meta =
     agentId: meta && typeof meta.agentId === "string" ? meta.agentId : null,
     requestSource: meta && typeof meta.requestSource === "string" ? meta.requestSource : null,
   };
+}
+
+function getFocusPidCandidates(request) {
+  if (!request) return [];
+  return normalizePidChain([
+    request.sourcePid,
+    request.agentPid,
+    ...(request.pidChain || []),
+  ]) || [];
 }
 
 function safeLogValue(value) {
@@ -1209,7 +1208,13 @@ function focusTerminalWindowLegacy(request, onDone) {
 
   // Windows: send command to persistent PowerShell process (near-instant)
   const titleCandidates = buildWindowsTitleCandidates(request, cwdCandidates);
-  const cmd = makeFocusCmd(sourcePid, titleCandidates, buildFocusCacheKey(request), request.wtHwnd);
+  const cmd = makeFocusCmd(
+    sourcePid,
+    titleCandidates,
+    buildFocusCacheKey(request),
+    request.wtHwnd,
+    getFocusPidCandidates(request),
+  );
   if (psProc && psProc.stdin.writable) {
     psProc.stdin.write(cmd + "\n");
     return true;
@@ -1244,8 +1249,14 @@ function cleanup() {
 // `callback(isFocused)` when the result arrives. Falls back to `false` after
 // the timeout (the check is best-effort; we show the bubble on uncertainty).
 //
-// Uasge: checkAgentTerminalFocused(sourcePid, (isFocused) => { ... })
-function checkAgentTerminalFocused(sourcePid, callback, timeoutMs = 2000) {
+// Usage: checkAgentTerminalFocused(sourcePidOrRequest, (isFocused) => { ... })
+function checkAgentTerminalFocused(sourcePidOrRequest, callback, timeoutMs = 2000) {
+  const request = normalizeFocusRequest(sourcePidOrRequest);
+  const candidatePids = getFocusPidCandidates(request);
+  if (!candidatePids.length) {
+    if (typeof callback === "function") callback(false);
+    return;
+  }
   if (!isWin || !psProc || !psProc.stdin || psProc.stdin.destroyed) {
     if (typeof callback === "function") callback(false);
     return;
@@ -1261,18 +1272,26 @@ function checkAgentTerminalFocused(sourcePid, callback, timeoutMs = 2000) {
     clearTimeout(timer);
     try { callback(isFocused); } catch {}
   });
+  const candidatePidLiteral = `@(${candidatePids.join(", ")})`;
   const checkScript = `
-$cur = ${sourcePid}
+$candidatePids = ${candidatePidLiteral}
 $focused = $false
 $fgHwnd = [WinFocus]::GetForegroundWindow()
 if ($fgHwnd -ne [IntPtr]::Zero) {
     $fgPid = 0
     [WinFocus]::GetWindowThreadProcessId($fgHwnd, [ref]$fgPid)
-    for ($i = 0; $i -lt 12; $i++) {
-        if ($cur -eq $fgPid) { $focused = $true; break }
-        $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$cur" -ErrorAction SilentlyContinue
-        if (-not $cim -or $cim.ParentProcessId -le 0 -or $cim.ParentProcessId -eq $cur) { break }
-        $cur = $cim.ParentProcessId
+    if ($candidatePids -contains [int]$fgPid) {
+        $focused = $true
+    }
+    foreach ($candidatePid in $candidatePids) {
+        if ($focused) { break }
+        $cur = $candidatePid
+        for ($i = 0; $i -lt 12; $i++) {
+            if ($cur -eq $fgPid) { $focused = $true; break }
+            $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$cur" -ErrorAction SilentlyContinue
+            if (-not $cim -or $cim.ParentProcessId -le 0 -or $cim.ParentProcessId -eq $cur) { break }
+            $cur = $cim.ParentProcessId
+        }
     }
 }
 Write-Output '${FOCUS_CHECK_PREFIX}${marker}:' + ($focused ? 'focused' : 'unfocused')

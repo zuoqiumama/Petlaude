@@ -33,7 +33,7 @@ function createTempLogPath() {
   return logPath;
 }
 
-function createPermissionHarness({ logPath = null } = {}) {
+function createPermissionHarness({ logPath = null, checkAgentTerminalFocused = null } = {}) {
   class FakeBrowserWindow {
     constructor() {
       this.destroyed = false;
@@ -103,6 +103,7 @@ function createPermissionHarness({ logPath = null } = {}) {
     getHudReservedOffset: () => 0,
     repositionUpdateBubble: () => {},
     focusTerminalForSession: () => {},
+    checkAgentTerminalFocused: checkAgentTerminalFocused || undefined,
     guardAlwaysOnTop: () => {},
     reapplyMacVisibility: () => {},
   });
@@ -307,5 +308,35 @@ describe("permission passive notify auto-close refresh", () => {
 
     mock.timers.tick(1);
     assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("checks task completion focus with the full captured process chain", () => {
+    let focusRequest = null;
+    const harness = createPermissionHarness({
+      checkAgentTerminalFocused(request, callback) {
+        focusRequest = request;
+        callback(true);
+      },
+    });
+
+    harness.api.showTaskCompleteBubble({
+      sessionId: "codex-a",
+      agentId: "codex",
+      agentName: "Codex",
+      sessionFolder: "repo",
+      taskSummary: "done",
+      _sessData: {
+        sourcePid: 1234,
+        agentPid: 5678,
+        pidChain: [1234, 5678, 9012],
+      },
+    });
+
+    assert.deepStrictEqual(focusRequest, {
+      sourcePid: 1234,
+      agentPid: 5678,
+      pidChain: [1234, 5678, 9012],
+    });
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
   });
 });

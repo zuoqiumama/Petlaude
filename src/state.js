@@ -59,6 +59,7 @@ let DND_SLEEP_TRANSITION_DURATION = 0;
 let COLLAPSE_DURATION = 0;
 let SLEEP_MODE = "full";
 const { SLEEP_SEQUENCE, STATE_PRIORITY, ONESHOT_STATES } = createStatePriorityConstants();
+const TASK_COMPLETE_EVENTS = new Set(["Stop", "stop", "agentStop", "event_msg:task_complete"]);
 
 // Session display hints — validated against theme.displayHintMap keys
 let DISPLAY_HINT_MAP = {};
@@ -1229,6 +1230,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     // needed, so focus data (sourcePid, wtHwnd, etc.) is always correct.
     if (
       state === "attention"
+      && TASK_COMPLETE_EVENTS.has(event)
       && !srcHeadless
       && !srcHost
       && event !== "SessionEnd"   // SessionEnd handles bubble in server route

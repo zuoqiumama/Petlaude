@@ -121,6 +121,33 @@ function rawSession(state, opts = {}) {
 // Group 1: resolveDisplayState() priority
 // ═════════════════════════════════════════════════════════════════════════════
 
+describe("task-complete bubble event gate", () => {
+  let api;
+  let shown;
+
+  beforeEach(() => {
+    shown = [];
+    api = require("../src/state")(makeCtx({
+      showTaskCompleteBubble: (payload) => shown.push(payload),
+    }));
+  });
+
+  afterEach(() => { api.cleanup(); });
+
+  it("shows for a real Stop completion", () => {
+    update(api, { id: "complete", state: "attention", event: "Stop" });
+
+    assert.strictEqual(shown.length, 1);
+    assert.strictEqual(shown[0].sessionId, "complete");
+  });
+
+  it("does not show for PostCompact even though it uses attention animation", () => {
+    update(api, { id: "compact", state: "attention", event: "PostCompact" });
+
+    assert.deepStrictEqual(shown, []);
+  });
+});
+
 describe("resolveDisplayState()", () => {
   let api;
   beforeEach(() => { api = require("../src/state")(makeCtx()); });

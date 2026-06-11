@@ -59,7 +59,7 @@ function loadFocusWithMock(options = {}) {
 }
 
 describe("Windows terminal focus", () => {
-  it("includes a last-resort any-WindowsTerminal fallback for focus reliability", () => {
+  it("does not focus an unrelated Windows Terminal as a last resort", () => {
     const { initFocus, cleanup } = loadFocusWithMock();
     try {
       const focus = initFocus({});
@@ -67,13 +67,36 @@ describe("Windows terminal focus", () => {
 
       // Primary WT title-matching still uses Get-Process -Name $wtName
       assert.match(cmd, /Get-Process -Name \$wtName/);
-      // The new last-resort fallback uses Select-Object -First 1 to find
-      // any visible WindowsTerminal window when title/PID matching fails
-      assert.match(cmd, /Select-Object -First 1/);
       // Verify the new direct MainWindowHandle fallback is present
       assert.match(cmd, /direct-focus:/);
       // Verify the AppActivate fallback is present
       assert.match(cmd, /appactivate:/);
+      assert.doesNotMatch(cmd, /direct-focus-any-wt/);
+      assert.doesNotMatch(cmd, /appactivate-any-wt/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("uses the captured PID chain when the transient source process has exited", () => {
+    const { initFocus, cleanup } = loadFocusWithMock();
+    try {
+      const focus = initFocus({});
+      const cmd = focus.__test.makeFocusCmd(
+        1234,
+        ["repo"],
+        "claude-code|session-1",
+        null,
+        [1234, 5678, 9012],
+      );
+
+      assert.match(cmd, /\$capturedPidChain = @\(1234, 5678, 9012\)/);
+      assert.match(cmd, /foreach \(\$candidatePid in \$capturedPidChain\)/);
+      assert.match(cmd, /captured-chain-direct/);
+      assert.ok(
+        cmd.indexOf("foreach ($candidatePid in $capturedPidChain)") < cmd.indexOf("$wtProcs = @()"),
+        "captured PID chain must run before global Windows Terminal title matching",
+      );
     } finally {
       cleanup();
     }
@@ -110,7 +133,7 @@ describe("Windows terminal focus", () => {
       assert.match(helperScript, /titled\.Count > 0/);
       assert.doesNotMatch(helperScript, /skip owned helper\/pop-up windows/);
       assert.match(cmd, /Get-ClawdVisiblePidWindows/);
-      assert.match(cmd, /Get-ClawdWindowsTerminalWindows/);
+      assert.doesNotMatch(cmd, /Get-ClawdWindowsTerminalWindows/);
       assert.match(cmd, /\$chainWindowsTerminalPids/);
       assert.match(cmd, /wt-parent-title-match/);
       assert.match(cmd, /wt-parent-title-ambiguous/);
@@ -125,8 +148,8 @@ describe("Windows terminal focus", () => {
       assert.match(cmd, /wt-title-ambiguous/);
       assert.match(cmd, /wt-title-mismatch-pid-window/);
       assert.match(cmd, /wt-title-mismatch-pid-window-ambiguous/);
-      assert.match(cmd, /wt-title-mismatch-single-wt-window/);
-      assert.match(cmd, /wt-title-mismatch-single-wt-window-ambiguous/);
+      assert.doesNotMatch(cmd, /wt-title-mismatch-single-wt-window/);
+      assert.doesNotMatch(cmd, /wt-title-mismatch-single-wt-window-ambiguous/);
       assert.match(cmd, /wt-title-mismatch-no-pid-window/);
     } finally {
       cleanup();
@@ -165,7 +188,7 @@ describe("Windows terminal focus", () => {
       assert.match(cmd, /reason = 'cached-window'/);
       assert.match(cmd, /Save-ClawdFocusCache \$matches\[0\]/);
       assert.match(cmd, /Save-ClawdFocusCache \$wtMatches\[0\]/);
-      assert.match(cmd, /Save-ClawdFocusCache \$singleWtWindows\[0\]/);
+      assert.match(cmd, /Save-ClawdFocusCache \$candidate\.MainWindowHandle/);
     } finally {
       cleanup();
     }
@@ -227,7 +250,7 @@ describe("Windows terminal focus", () => {
       assert.match(cmd, /\$consoleShimSkipped = \$false/);
       assert.match(cmd, /IsLegacyConsoleWindow\(\$consoleHwnd\)/);
       assert.match(cmd, /\$pendingConsoleHwnd = \$consoleHwnd/);
-      assert.match(cmd, /wt-title-mismatch-single-wt-window-ambiguous/);
+      assert.doesNotMatch(cmd, /wt-title-mismatch-single-wt-window-ambiguous/);
       assert.match(cmd, /wt-title-mismatch-pid-window-ambiguous/);
       assert.match(cmd, /wt-title-mismatch-no-pid-window/);
       assert.match(cmd, /wt-parent-title-ambiguous/);
@@ -364,6 +387,46 @@ describe("Windows terminal focus", () => {
 
       assert.strictEqual(writes.length, 1);
       assert.match(logs.join("\n"), /focus result branch=windows reason=dropped-duplicate/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("checks foreground state against the captured PID chain", () => {
+    const writes = [];
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9999,
+        stdin: {
+          writable: true,
+          destroyed: false,
+          write: (chunk) => writes.push(String(chunk)),
+          on() {},
+        },
+        stdout: {
+          setEncoding() {},
+          on() {},
+          unref() {},
+        },
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({});
+      focus.initFocusHelper();
+      writes.length = 0;
+      focus.checkAgentTerminalFocused({
+        sourcePid: 1234,
+        agentPid: 5678,
+        pidChain: [1234, 5678, 9012],
+      }, () => {});
+
+      assert.strictEqual(writes.length, 1);
+      assert.match(writes[0], /\$candidatePids = @\(1234, 5678, 9012\)/);
+      assert.match(writes[0], /if \(\$candidatePids -contains \[int\]\$fgPid\)/);
     } finally {
       cleanup();
     }

@@ -1524,8 +1524,13 @@ function showTaskCompleteBubble({ sessionId, agentId, agentName, sessionFolder, 
   };
 
   // Show bubble immediately — synced with pet's "attention" animation.
-  if (sourcePid && typeof ctx.checkAgentTerminalFocused === "function") {
-    ctx.checkAgentTerminalFocused(sourcePid, (isFocused) => {
+  const focusRequest = {
+    sourcePid,
+    agentPid: focusFields.agentPid || null,
+    pidChain: focusFields.pidChain || null,
+  };
+  if ((sourcePid || focusRequest.agentPid || focusRequest.pidChain) && typeof ctx.checkAgentTerminalFocused === "function") {
+    ctx.checkAgentTerminalFocused(focusRequest, (isFocused) => {
       if (isFocused) {
         console.warn(`[Clawd] showTaskCompleteBubble SKIPPED (terminal focused): session=${sessionId}`);
         permLog(`task-complete skipped (terminal focused): agent=${agentId} session=${sessionId}`);
