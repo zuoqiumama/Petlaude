@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { ACTIONS } = require("../src/companion/action-manifest");
 
 const {
   getThemeMetadata,
@@ -184,6 +185,32 @@ describe("theme metadata facade helpers", () => {
     assert.ok(meta.previewFileUrl.includes("preview.svg"));
     assert.strictEqual(meta.previewContentRatio, 0.5);
     assert.ok(meta.capabilities);
+  });
+
+  it("reports incomplete AI Studio action coverage from bound generated assets", () => {
+    const { userThemesDir } = makeTempRoot();
+    const raw = validThemeJson({
+      name: "Partial Studio Pet",
+      author: "Clawd AI Studio",
+      states: {
+        ...validThemeJson().states,
+        idle: ["idle.svg"],
+      },
+    });
+    const themeDir = writeTheme(userThemesDir, "partial-studio-pet", raw, {
+      "idle.svg": "<svg/>",
+    });
+
+    const meta = getThemeMetadata("partial-studio-pet", {
+      readThemeJson: () => ({ raw, isBuiltin: false, themeDir }),
+    });
+
+    assert.deepStrictEqual(meta.studioPet, {
+      complete: false,
+      generatedActionCount: 1,
+      totalActionCount: ACTIONS.length,
+      missingActionIds: ACTIONS.slice(1).map((action) => action.id),
+    });
   });
 
   it("scans built-in and user metadata while skipping scaffold, malformed, and duplicate user themes", () => {

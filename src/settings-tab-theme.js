@@ -159,6 +159,16 @@
     return badges;
   }
 
+  function getStudioIncompleteLabel(theme) {
+    const status = theme && theme.studioPet;
+    if (!status || status.complete) return "";
+    const formatter = t("themeStudioActionsIncomplete");
+    if (typeof formatter === "function") {
+      return formatter(status.generatedActionCount || 0, status.totalActionCount || 0);
+    }
+    return String(formatter || "");
+  }
+
   function buildThemeActions() {
     const row = document.createElement("div");
     row.className = "theme-actions";
@@ -280,7 +290,8 @@
     card.appendChild(name);
 
     const capLabels = getThemeCapabilityBadgeLabels(theme);
-    if (capLabels.length) {
+    const studioIncompleteLabel = getStudioIncompleteLabel(theme);
+    if (capLabels.length || studioIncompleteLabel) {
       const caps = document.createElement("div");
       caps.className = "theme-card-capabilities";
       for (const label of capLabels) {
@@ -289,10 +300,16 @@
         badge.textContent = label;
         caps.appendChild(badge);
       }
+      if (studioIncompleteLabel) {
+        const badge = document.createElement("span");
+        badge.className = "theme-card-badge warning";
+        badge.textContent = studioIncompleteLabel;
+        caps.appendChild(badge);
+      }
       card.appendChild(caps);
     }
 
-    const canDelete = !theme.builtin && !theme.active && !theme.managedCodexPet;
+    const canDelete = !theme.builtin && !theme.managedCodexPet;
     const canRemoveCodexPet = !!theme.managedCodexPet;
     const footer = document.createElement("div");
     footer.className = "theme-card-footer";
@@ -305,9 +322,10 @@
       const btn = document.createElement("button");
       btn.className = "theme-delete-btn";
       btn.type = "button";
-      btn.textContent = "\u{1F5D1}";
+      btn.textContent = t("themeDeleteLabel");
       btn.title = t("themeDeleteLabel");
       btn.setAttribute("aria-label", t("themeDeleteLabel"));
+      btn.disabled = runtime.themeDeletionPendingThemeId === theme.id;
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
         handleDeleteTheme(theme);
@@ -521,10 +539,19 @@
 
   function handleDeleteTheme(theme) {
     if (!window.settingsAPI) return;
+    runtime.themeDeletionPendingThemeId = theme.id;
+    if (state.activeTab === "theme") ops.requestRender({ content: true });
     window.settingsAPI
       .confirmRemoveTheme(theme.id)
       .then((res) => {
         if (!res || !res.confirmed) return null;
+        if (theme.active) {
+          return window.settingsAPI.command("setThemeSelection", { themeId: "clawd" })
+            .then((result) => {
+              if (!result || result.status !== "ok") return result;
+              return window.settingsAPI.command("removeTheme", theme.id);
+            });
+        }
         return window.settingsAPI.command("removeTheme", theme.id);
       })
       .then((result) => {
@@ -541,6 +568,10 @@
       })
       .catch((err) => {
         ops.showToast(t("toastThemeDeleteFailed") + (err && err.message), { error: true });
+      })
+      .finally(() => {
+        runtime.themeDeletionPendingThemeId = null;
+        if (state.activeTab === "theme") ops.requestRender({ content: true });
       });
   }
 

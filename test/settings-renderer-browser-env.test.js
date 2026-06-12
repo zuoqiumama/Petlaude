@@ -3032,6 +3032,42 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(commands, []);
   });
 
+  it("marks incomplete AI Studio pets and deletes an active user theme via the built-in fallback", async () => {
+    const { content, commands } = loadThemeTabForTest({
+      themes: [
+        {
+          id: "partial-studio-pet",
+          name: "Partial Studio Pet",
+          active: true,
+          studioPet: {
+            complete: false,
+            generatedActionCount: 1,
+            totalActionCount: 20,
+            missingActionIds: ["working"],
+          },
+        },
+      ],
+      settingsAPI: {
+        confirmRemoveTheme: () => Promise.resolve({ confirmed: true }),
+      },
+    });
+
+    const badges = content.querySelectorAll(".theme-card-badge");
+    assert.ok(badges.some((badge) => badge.textContent === "Actions incomplete 1/20"));
+
+    const deleteButton = content.querySelector(".theme-delete-btn");
+    assert.ok(deleteButton);
+    assert.strictEqual(deleteButton.textContent, "Delete theme");
+    deleteButton.dispatchEvent({ type: "click" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(commands.length, 2);
+    assert.strictEqual(commands[0].name, "setThemeSelection");
+    assert.strictEqual(commands[0].payload.themeId, "clawd");
+    assert.strictEqual(commands[1].name, "removeTheme");
+    assert.strictEqual(commands[1].payload, "partial-studio-pet");
+  });
+
   it("animates collapsible Settings groups with measured height instead of instant hidden jumps", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");

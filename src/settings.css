@@ -1596,6 +1596,16 @@ html, body {
   background: rgba(120, 113, 108, 0.15);
   color: var(--accent);
 }
+.theme-card-badge.warning {
+  background: rgba(217, 119, 6, 0.12);
+  color: #b65f05;
+}
+@media (prefers-color-scheme: dark) {
+  .theme-card-badge.warning {
+    background: rgba(245, 158, 11, 0.16);
+    color: #fbbf24;
+  }
+}
 .theme-card-capabilities {
   display: flex;
   flex-wrap: wrap;
@@ -1618,19 +1628,25 @@ html, body {
   white-space: nowrap;
 }
 .theme-delete-btn {
-  border: none;
+  border: 1px solid rgba(185, 28, 28, 0.18);
   background: transparent;
-  color: var(--text-tertiary);
-  font-size: 14px;
-  padding: 4px 6px;
-  border-radius: 5px;
+  color: var(--toast-error);
+  font-size: 11px;
+  font-weight: 600;
+  min-height: 26px;
+  padding: 3px 7px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
   font-family: inherit;
 }
-.theme-delete-btn:hover {
-  color: var(--toast-error);
+.theme-delete-btn:hover:not(:disabled) {
   background: rgba(185, 28, 28, 0.1);
+  border-color: rgba(185, 28, 28, 0.3);
+}
+.theme-delete-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 .theme-delete-btn:focus-visible {
   outline: 2px solid var(--toast-error);

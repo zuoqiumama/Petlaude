@@ -12,6 +12,7 @@ const {
   getStateFiles,
   buildCapabilities,
 } = require("./theme-schema");
+const { getStudioThemeActionStatus } = require("./studio/theme-status");
 
 function fileUrl(absPath) {
   try { return pathToFileURL(absPath).href; } catch { return null; }
@@ -119,6 +120,7 @@ function buildThemeMetadata(themeId, raw, isBuiltin, themeDir, options = {}) {
     previewContentOffsetPct: computePreviewContentOffsetPct(raw),
     variants: buildVariantMetadata(raw, themeDir, isBuiltin, options),
     capabilities: buildCapabilities(raw),
+    studioPet: getStudioThemeActionStatus(raw, themeDir),
   };
 }
 
