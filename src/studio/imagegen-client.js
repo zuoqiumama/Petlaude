@@ -22,6 +22,18 @@ function typedError(code, message) {
   return err;
 }
 
+// The client always appends its own "/v1/images/..." path. OpenAI's documented
+// convention, however, is baseURL = "https://api.openai.com/v1", so users
+// routinely configure a base that already ends in /v1 — which used to yield
+// "/v1/v1/images/..." and a hard HTTP 404. Strip trailing slashes and a single
+// trailing /v1 so both "https://host" and "https://host/v1" resolve identically.
+function normalizeBaseUrl(baseUrl) {
+  return String(baseUrl == null ? "" : baseUrl)
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/v1$/i, "");
+}
+
 function defaultHttpPost(url, { headers, body, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     let parsed;
@@ -129,7 +141,7 @@ function buildMultipartBody({ model, prompt, size, images }) {
 
 async function generateImage(params = {}, deps = {}) {
   const httpPost = typeof deps.httpPost === "function" ? deps.httpPost : defaultHttpPost;
-  const baseUrl = requireStr(params.baseUrl, "baseUrl").replace(/\/+$/, "");
+  const baseUrl = normalizeBaseUrl(requireStr(params.baseUrl, "baseUrl"));
   const apiKey = requireStr(params.apiKey, "apiKey");
   const model = requireStr(params.model, "model");
   const prompt = requireStr(params.prompt, "prompt");
@@ -169,9 +181,18 @@ async function generateImage(params = {}, deps = {}) {
   if (!res || res.status < 200 || res.status >= 300) {
     const status = res ? res.status : "no response";
     // Note: deliberately does not include the request (which carries the key).
+    if (res && res.status === 404) {
+      // Most actionable case: the path resolved but the provider has no image
+      // endpoint there (a text-only OpenAI-compatible API), or the model is
+      // unknown. baseUrl /v1 doubling is already handled by normalizeBaseUrl.
+      throw typedError(
+        "IMAGEGEN_HTTP_ERROR",
+        "image generation endpoint not found (HTTP 404) — check that the provider supports image generation and the model name is correct",
+      );
+    }
     throw typedError("IMAGEGEN_HTTP_ERROR", `image generation failed (HTTP ${status})`);
   }
   return parseImageSource(res.text);
 }
 
-module.exports = { generateImage, MAX_RESPONSE_BYTES };
+module.exports = { generateImage, MAX_RESPONSE_BYTES, normalizeBaseUrl };

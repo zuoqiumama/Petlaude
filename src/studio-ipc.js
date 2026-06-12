@@ -13,6 +13,7 @@ const https = require("https");
 const { ACTIONS } = require("./companion/action-manifest");
 const { createStudioRuntime } = require("./studio/studio-runtime");
 const { ensurePetTheme } = require("./studio/pet-theme");
+const { normalizeBaseUrl } = require("./studio/imagegen-client");
 
 const REFERENCE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const MAX_REFERENCE_BYTES = 10 * 1024 * 1024;
@@ -117,8 +118,10 @@ function registerStudioIpc(options = {}) {
     if (!baseUrl) return { status: "error", message: "baseUrl not configured" };
     if (!apiKey) return { status: "error", message: "API key not configured" };
     try {
+      // Use the same baseUrl normalization as generateImage so a "test
+      // passed" result actually predicts the generation URL (no /v1 doubling).
       const res = await httpGet(
-        `${baseUrl.replace(/\/+$/, "")}/v1/models`,
+        `${normalizeBaseUrl(baseUrl)}/v1/models`,
         { Authorization: `Bearer ${apiKey}` },
       );
       if (res.status && res.status >= 200 && res.status < 300) return { status: "ok" };
