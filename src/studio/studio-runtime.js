@@ -97,6 +97,23 @@ function patchThemeWithAction(theme, action, assetFile) {
   const next = { ...theme };
   const duration = action.anim.totalMs;
 
+  if (action.category === "core") {
+    const stateKeys = action.trigger && Array.isArray(action.trigger.states)
+      ? action.trigger.states
+      : null;
+    if (!stateKeys || stateKeys.length === 0) {
+      throw new Error(`core action ${action.id} has no trigger.states`);
+    }
+    // Replace the static-reference placeholder (and sleeping's fallbackTo
+    // binding) with the generated looping animation for every bound state.
+    const states = { ...(next.states || {}) };
+    for (const key of stateKeys) {
+      states[key] = [assetFile];
+    }
+    next.states = states;
+    return next;
+  }
+
   if (action.category === "idle-life") {
     const idleLife = { enabled: true, cooldownMs: 30000, ...(next.idleLife || {}) };
     const behaviors = Array.isArray(idleLife.behaviors) ? [...idleLife.behaviors] : [];

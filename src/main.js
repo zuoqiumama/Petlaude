@@ -2578,6 +2578,8 @@ registerStudioIpc({
   getProcessor: getStudioProcessor,
   userThemesDir: path.join(app.getPath("userData"), "themes"),
   templateDir: path.join(__dirname, "..", "themes", "template"),
+  getActiveTheme,
+  resolveThemeAsset: (theme, filename) => themeLoader._resolveAssetPath(theme, filename),
   getSettingsWindow,
   onThemesChanged: () => {
     // The themes list is re-scanned when the Theme tab queries it; nothing to

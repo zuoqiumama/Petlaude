@@ -230,6 +230,44 @@
         "clawd-react-double-jump.svg"
       ],
       "duration": 3500
+    },
+    "rapidClick": {
+      "file": "clawd-react-annoyed.svg",
+      "duration": 3500,
+      "threshold": 6
+    }
+  },
+  "touchReactions": {
+    "rapidClick": {
+      "file": "clawd-react-annoyed.svg",
+      "duration": 3500,
+      "threshold": 6
+    }
+  },
+  "contextReactions": {
+    "errorStreak": {
+      "file": "clawd-happy.svg",
+      "duration": 4000
+    },
+    "smoothWork": {
+      "file": "clawd-happy.svg",
+      "duration": 3000
+    },
+    "sessionEnd": {
+      "file": "clawd-headphones-groove.svg",
+      "duration": 4000
+    },
+    "firstSession": {
+      "file": "clawd-wake.svg",
+      "duration": 2500
+    },
+    "breakReminder": {
+      "file": "clawd-notification.svg",
+      "duration": 5000
+    },
+    "tokenMilestone": {
+      "file": "clawd-react-double-jump.svg",
+      "duration": 3500
     }
   },
   "miniMode": {

@@ -111,6 +111,27 @@ describe("ensurePetTheme", () => {
     assert.strictEqual(a.themeDir, b.themeDir);
   });
 
+  it("preserves generated core-state animations across re-entry, resetting only placeholders", () => {
+    const userThemesDir = tmpDir();
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "Core Pet", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    theme.states.idle = ["idle.svg"];
+    theme.states.sleeping = ["sleeping.svg"];
+    theme.states.juggling = ["working.svg"]; // a key the scaffold doesn't define
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "Core Pet", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.deepStrictEqual(repaired.states.idle, ["idle.svg"]);
+    assert.deepStrictEqual(repaired.states.sleeping, ["sleeping.svg"]);
+    assert.deepStrictEqual(repaired.states.juggling, ["working.svg"]);
+    // Never-generated states reset to the fresh reference placeholder.
+    assert.deepStrictEqual(repaired.states.working, ["reference.png"]);
+    assert.deepStrictEqual(repaired.states.thinking, ["reference.png"]);
+  });
+
   it("drops old template reaction placeholders while preserving generated touch reactions", () => {
     const userThemesDir = tmpDir();
     const referencePath = tmpReference();

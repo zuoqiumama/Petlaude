@@ -155,6 +155,44 @@ describe("studio-runtime generateAction", () => {
     assert.strictEqual(theme.reactions.rapidClick.file, "dizzy.svg");
   });
 
+  it("writes core actions into theme.states replacing the static reference", async () => {
+    await h.runtime.generateAction("working");
+    const theme = readTheme(h.themeDir);
+    // The busy family all binds to the one generated working loop.
+    assert.deepStrictEqual(theme.states.working, ["working.svg"]);
+    assert.deepStrictEqual(theme.states.juggling, ["working.svg"]);
+    assert.deepStrictEqual(theme.states.sweeping, ["working.svg"]);
+    assert.deepStrictEqual(theme.states.carrying, ["working.svg"]);
+    // Untouched states keep the static reference placeholder.
+    assert.match(theme.states.idle[0], /^reference\./);
+    assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "working.svg")));
+  });
+
+  it("generated sleeping replaces the fallbackTo binding with a real animation", async () => {
+    const before = readTheme(h.themeDir);
+    assert.deepStrictEqual(before.states.sleeping, { fallbackTo: "idle" });
+    await h.runtime.generateAction("sleeping");
+    const theme = readTheme(h.themeDir);
+    assert.deepStrictEqual(theme.states.sleeping, ["sleeping.svg"]);
+  });
+
+  it("core states survive ensurePetTheme re-entry between per-action runs", async () => {
+    await h.runtime.generateAction("idle");
+    await h.runtime.generateAction("error");
+    // studio-ipc re-enters ensurePetTheme before every generation.
+    ensurePetTheme({
+      name: "Test Pet",
+      referencePath: h.refPath,
+      userThemesDir: path.join(h.userDataDir, "themes"),
+      templateDir: TEMPLATE_DIR,
+    });
+    const theme = readTheme(h.themeDir);
+    assert.deepStrictEqual(theme.states.idle, ["idle.svg"]);
+    assert.deepStrictEqual(theme.states.error, ["error.svg"]);
+    // Never-generated states still fall back to the reference placeholder.
+    assert.match(theme.states.thinking[0], /^reference\./);
+  });
+
   it("re-generating the same action replaces its entry (no duplicates)", async () => {
     await h.runtime.generateAction("yawn");
     await h.runtime.generateAction("yawn");

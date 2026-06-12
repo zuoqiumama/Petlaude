@@ -255,6 +255,24 @@
       "file": "cloudling-react-drag.svg"
     }
   },
+  "contextReactions": {
+    "smoothWork": {
+      "file": "cloudling-conducting.svg",
+      "duration": 3500
+    },
+    "firstSession": {
+      "file": "cloudling-sleeping-to-idle.svg",
+      "duration": 2000
+    },
+    "breakReminder": {
+      "file": "cloudling-notification.svg",
+      "duration": 5000
+    },
+    "tokenMilestone": {
+      "file": "cloudling-attention.svg",
+      "duration": 3000
+    }
+  },
   "miniMode": {
     "supported": true,
     "offsetRatio": 0.486,

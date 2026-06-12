@@ -128,4 +128,77 @@ describe("studio-ipc", () => {
     const res = await bad.ipcMain.invoke("studio:test-config");
     assert.strictEqual(res.status, "error");
   });
+
+  it("use-current-pet errors when no active-theme hook is wired", async () => {
+    const { ipcMain } = register();
+    const res = await ipcMain.invoke("studio:use-current-pet");
+    assert.strictEqual(res.status, "error");
+  });
+
+  it("use-current-pet rasterizes the active theme's idle visual into a PNG reference", async () => {
+    const themeDir = tmpDir();
+    const assetAbs = path.join(themeDir, "pet-idle.svg");
+    fs.writeFileSync(assetAbs, "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    const pngBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const prepareCalls = [];
+    const refsDir = path.join(tmpDir(), "studio-refs");
+    const { ipcMain } = register({
+      studioRefsDir: refsDir,
+      getActiveTheme: () => ({
+        _id: "clawd",
+        name: "Clawd",
+        states: { idle: ["pet-idle.svg"] },
+      }),
+      resolveThemeAsset: (_theme, filename) => path.join(themeDir, filename),
+      getProcessor: () => ({
+        prepareReference: async (payload) => {
+          prepareCalls.push(payload);
+          return { dataUrl: `data:image/png;base64,${pngBytes.toString("base64")}` };
+        },
+      }),
+    });
+
+    const res = await ipcMain.invoke("studio:use-current-pet");
+    assert.strictEqual(res.status, "ok");
+    assert.strictEqual(res.suggestedName, "Clawd AI");
+    assert.ok(prepareCalls[0].dataUrl.startsWith("data:image/svg+xml;base64,"), "svg passed for rasterizing");
+    assert.ok(fs.existsSync(res.path), "png reference written");
+    assert.ok(res.path.startsWith(refsDir), "written under studio-refs");
+    assert.ok(pngBytes.equals(fs.readFileSync(res.path)), "decoded png persisted");
+  });
+
+  it("use-current-pet prefers a Studio theme's original raster reference", async () => {
+    const themeDir = tmpDir();
+    fs.mkdirSync(path.join(themeDir, "assets"), { recursive: true });
+    const refAbs = path.join(themeDir, "assets", "reference.png");
+    fs.writeFileSync(refAbs, Buffer.from("raster-reference"));
+    const seen = [];
+    const { ipcMain } = register({
+      studioRefsDir: path.join(tmpDir(), "studio-refs"),
+      getActiveTheme: () => ({
+        _id: "my-pet",
+        name: "My Pet AI",
+        _themeDir: themeDir,
+        states: { idle: ["idle.svg"] },
+      }),
+      resolveThemeAsset: () => { throw new Error("must not resolve idle when reference exists"); },
+      getProcessor: () => ({
+        prepareReference: async (payload) => {
+          seen.push(payload.dataUrl);
+          return {
+            dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          };
+        },
+      }),
+    });
+
+    const res = await ipcMain.invoke("studio:use-current-pet");
+    assert.strictEqual(res.status, "ok");
+    assert.ok(seen[0].startsWith("data:image/png;base64,"), "raster reference used as source");
+    // Name already ends in AI — no double suffix.
+    assert.strictEqual(res.suggestedName, "My Pet AI");
+  });
 });

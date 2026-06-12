@@ -17,6 +17,25 @@ const { ensurePetTheme } = require("./studio/pet-theme");
 const REFERENCE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const MAX_REFERENCE_BYTES = 10 * 1024 * 1024;
 
+// Theme asset types we can turn into a generation reference. APNG carries the
+// PNG magic, so image/png is the correct data-URL mime for it.
+const THEME_ASSET_MIME = Object.freeze({
+  ".png": "image/png",
+  ".apng": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+});
+
+function decodePngDataUrl(dataUrl) {
+  const match = /^data:image\/png;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(dataUrl || ""));
+  if (!match) return null;
+  const bytes = Buffer.from(match[1].replace(/\s+/g, ""), "base64");
+  return bytes.length > 0 ? bytes : null;
+}
+
 function requiredDependency(value, name) {
   if (!value) throw new Error(`registerStudioIpc requires ${name}`);
   return value;
@@ -47,6 +66,10 @@ function registerStudioIpc(options = {}) {
   const onThemesChanged = options.onThemesChanged || (() => {});
   const httpGet = options.httpGet || defaultHttpGet;
   const runtimeDeps = options.runtimeDeps || {};
+  // Optional active-theme hooks for "use the current pet as reference".
+  const getActiveTheme = typeof options.getActiveTheme === "function" ? options.getActiveTheme : null;
+  const resolveThemeAsset = typeof options.resolveThemeAsset === "function" ? options.resolveThemeAsset : null;
+  const studioRefsDir = options.studioRefsDir || path.join(path.dirname(userThemesDir), "studio-refs");
 
   let generating = false;
   const disposers = [];
@@ -135,6 +158,74 @@ function registerStudioIpc(options = {}) {
     const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : `image/${ext.slice(1)}`;
     const dataUrl = `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
     return { status: "ok", path: filePath, dataUrl };
+  });
+
+  // Snapshot the active pet's look into a PNG reference so the Studio can
+  // derive a complete AI pet (core states + companion actions) in the same
+  // visual identity — including from the built-in pets.
+  async function captureCurrentPetReference() {
+    const theme = getActiveTheme ? getActiveTheme() : null;
+    if (!theme || !theme.states) {
+      return { status: "error", message: "no active pet theme" };
+    }
+
+    // Studio-generated themes keep their original raster reference on disk;
+    // prefer it over the idle SVG, whose stacked animation frames rasterize
+    // blank at time zero.
+    let sourcePath = null;
+    if (theme._themeDir) {
+      for (const ext of [".png", ".jpg", ".jpeg", ".webp"]) {
+        const candidate = path.join(theme._themeDir, "assets", `reference${ext}`);
+        if (fs.existsSync(candidate)) {
+          sourcePath = candidate;
+          break;
+        }
+      }
+    }
+    if (!sourcePath) {
+      const idleFiles = Array.isArray(theme.states.idle) ? theme.states.idle : [];
+      const filename = idleFiles[0];
+      if (!filename) return { status: "error", message: "active theme has no idle visual" };
+      const resolved = resolveThemeAsset ? resolveThemeAsset(theme, filename) : null;
+      if (!resolved || !fs.existsSync(resolved)) {
+        return { status: "error", message: "active theme asset not found" };
+      }
+      sourcePath = resolved;
+    }
+
+    const ext = path.extname(sourcePath).toLowerCase();
+    const mime = THEME_ASSET_MIME[ext];
+    if (!mime) {
+      return { status: "error", message: `unsupported theme asset type: ${ext || "unknown"}` };
+    }
+    const sourceDataUrl = `data:${mime};base64,${fs.readFileSync(sourcePath).toString("base64")}`;
+
+    // Rasterize + downscale in the offscreen window (SVG/GIF/APNG → PNG).
+    const prepared = await getProcessor().prepareReference({ dataUrl: sourceDataUrl, maxSize: 768 });
+    const png = decodePngDataUrl(prepared && prepared.dataUrl);
+    if (!png) return { status: "error", message: "could not rasterize the current pet" };
+
+    fs.mkdirSync(studioRefsDir, { recursive: true });
+    const safeId = String(theme._id || "pet").replace(/[^a-z0-9_-]/gi, "_");
+    const outPath = path.join(studioRefsDir, `${safeId}.png`);
+    fs.writeFileSync(outPath, png);
+
+    const baseName = typeof theme.name === "string" && theme.name.trim() ? theme.name.trim() : "Pet";
+    return {
+      status: "ok",
+      path: outPath,
+      dataUrl: prepared.dataUrl,
+      suggestedName: /\bai\b/i.test(baseName) ? baseName : `${baseName} AI`,
+    };
+  }
+
+  handle("studio:use-current-pet", async () => {
+    if (!getActiveTheme) return { status: "error", message: "active theme unavailable" };
+    try {
+      return await captureCurrentPetReference();
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || "capture failed" };
+    }
   });
 
   handle("studio:generate", async (_event, payload) => {

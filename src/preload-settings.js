@@ -177,6 +177,8 @@ contextBridge.exposeInMainWorld("pricing", {
 //   saveConfig(cfg)               Promise<{ status, keyPersisted?, message? }>
 //   testConfig()                  Promise<{ status, note?, message? }>
 //   pickReference()               Promise<{ status, path?, dataUrl?, message? }>
+//   useCurrentPet()               Promise<{ status, path?, dataUrl?, suggestedName?, message? }>
+//                                 — snapshot the active pet as the reference image
 //   generate(payload)             Promise<{ status, themeId?, result?, summary?, message? }>
 //                                 payload: { mode?: "all", actionId?, petName, referencePath }
 //   onProgress(cb)                cb({ actionId, stage, ... }) — generation progress stream
@@ -192,6 +194,7 @@ contextBridge.exposeInMainWorld("studioAPI", {
   saveConfig: (cfg) => ipcRenderer.invoke("studio:save-config", cfg),
   testConfig: () => ipcRenderer.invoke("studio:test-config"),
   pickReference: () => ipcRenderer.invoke("studio:pick-reference"),
+  useCurrentPet: () => ipcRenderer.invoke("studio:use-current-pet"),
   generate: (payload) => ipcRenderer.invoke("studio:generate", payload),
   onProgress: (cb) => {
     if (typeof cb !== "function") return () => {};

@@ -76,6 +76,21 @@ function buildBaseTheme(name, referenceFile, previous) {
     for (const key of ["idleLife", "contextReactions", "touchReactions"]) {
       if (previous[key] && typeof previous[key] === "object") theme[key] = previous[key];
     }
+    // Core-state animations from earlier runs. Studio writes them as
+    // `<actionId>.svg` arrays while the scaffold placeholder is always the
+    // raster reference image, so an all-SVG binding can only be generated.
+    const states = { ...theme.states };
+    let statesChanged = false;
+    for (const [key, entry] of Object.entries(previous.states || {})) {
+      const generated = Array.isArray(entry)
+        && entry.length > 0
+        && entry.every((file) => typeof file === "string" && /\.svg$/i.test(file));
+      if (generated) {
+        states[key] = [...entry];
+        statesChanged = true;
+      }
+    }
+    if (statesChanged) theme.states = states;
     const reactions = {};
     for (const key of ["rapidClick", "dragRelease"]) {
       const entry = previous.reactions && previous.reactions[key];

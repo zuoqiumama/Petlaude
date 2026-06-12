@@ -219,6 +219,28 @@
       "duration": 2500
     }
   },
+  "contextReactions": {
+    "errorStreak": {
+      "file": "calico-happy.apng",
+      "duration": 4000
+    },
+    "smoothWork": {
+      "file": "calico-happy.apng",
+      "duration": 3000
+    },
+    "firstSession": {
+      "file": "calico-waking.apng",
+      "duration": 2500
+    },
+    "breakReminder": {
+      "file": "calico-notification.apng",
+      "duration": 5000
+    },
+    "tokenMilestone": {
+      "file": "calico-happy.apng",
+      "duration": 3500
+    }
+  },
   "miniMode": {
     "supported": true,
     "flipAssets": true,

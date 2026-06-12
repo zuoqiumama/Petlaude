@@ -38,10 +38,32 @@ describe("action-manifest contract", () => {
     assert.strictEqual(new Set(ACTIONS.map((a) => a.id)).size, ACTIONS.length);
   });
 
-  it("covers all three categories with the expected actions", () => {
+  it("covers all four categories with the expected actions", () => {
+    assert.ok(listByCategory("core").length >= 6, "core count");
     assert.ok(listByCategory("idle-life").length >= 6, "idle-life count");
     assert.ok(listByCategory("context").length >= 6, "context count");
     assert.ok(listByCategory("touch").length >= 2, "touch count");
+  });
+
+  it("core actions cover the pet's everyday states and loop forever", () => {
+    const boundStates = new Set();
+    for (const a of listByCategory("core")) {
+      assert.ok(a.trigger && Array.isArray(a.trigger.states) && a.trigger.states.length > 0,
+        `trigger.states for ${a.id}`);
+      assert.strictEqual(a.anim.loop, "loop", `core action ${a.id} must loop`);
+      for (const s of a.trigger.states) boundStates.add(s);
+    }
+    // Required theme states plus the high-traffic optional ones a Studio pet
+    // must animate to be a complete replacement for a built-in pet.
+    for (const s of ["idle", "working", "thinking", "sleeping", "error", "notification"]) {
+      assert.ok(boundStates.has(s), `core actions bind states.${s}`);
+    }
+  });
+
+  it("core actions are listed first so generate-all yields a usable pet early", () => {
+    const firstNonCore = ACTIONS.findIndex((a) => a.category !== "core");
+    const lastCore = ACTIONS.map((a) => a.category).lastIndexOf("core");
+    assert.ok(lastCore < firstNonCore, "all core actions precede other categories");
   });
 
   it("getAction looks up by id and returns null for unknown", () => {

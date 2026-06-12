@@ -17,8 +17,16 @@
 //               left-to-right, top row then bottom row
 //   anim        playback timing { totalMs, loop, hold?, windowMove?, overlayText? }
 //   trigger     when/how the Companion plays it (category-specific shape)
+//
+// Categories:
+//   core        the pet's base state animations. trigger.states lists the
+//               theme `states.<key>` bindings the generated asset fills, so a
+//               Studio pet animates in the same slots built-in pets do
+//               (idle/working/thinking/sleeping/error/notification) instead of
+//               showing a static reference image.
+//   idle-life / context / touch   companion extras layered on top.
 
-const CATEGORIES = Object.freeze(["idle-life", "context", "touch"]);
+const CATEGORIES = Object.freeze(["core", "idle-life", "context", "touch"]);
 
 // Default chroma-key background color for generation. The character is keyed
 // out against this; never use this color (or near it) in the character. Studio
@@ -49,6 +57,70 @@ function action(id, category, frames, grid, posePrompts, anim, trigger) {
 }
 
 const ACTIONS = Object.freeze([
+  // ── core ──────────────────────────────────────────────────────────────
+  // Generated first by generateAll so a partial run still yields a pet that
+  // animates in its everyday states. All loop forever; the runtime keeps the
+  // SVG on screen for as long as the state lasts.
+  action("idle", "core", 4, { cols: 2, rows: 2 },
+    [
+      "standing relaxed, arms at sides, eyes open, gentle neutral smile",
+      "breathing in, body and shoulders rising slightly taller, chest a little fuller",
+      "blinking, eyes closed, body still at the relaxed standing height",
+      "breathing out, body settling slightly lower, content expression",
+    ],
+    { totalMs: 3200, loop: "loop" },
+    { states: ["idle"] }),
+
+  action("working", "core", 4, { cols: 2, rows: 2 },
+    [
+      "sitting with a small laptop resting on its lap, both hands touching the keyboard, looking at the screen",
+      "typing, left hand lifted just above the keyboard, right hand pressing the keys, focused eyes",
+      "typing, right hand lifted just above the keyboard, left hand pressing the keys, leaning slightly toward the screen",
+      "both hands pressing the keyboard at once, concentrated expression with determined eyes",
+    ],
+    { totalMs: 2400, loop: "loop" },
+    // One busy-loop covers the whole working family until dedicated
+    // juggling/sweeping/carrying actions exist.
+    { states: ["working", "juggling", "sweeping", "carrying"] }),
+
+  action("thinking", "core", 4, { cols: 2, rows: 2 },
+    [
+      "standing, one hand touching its chin, eyes looking up thoughtfully",
+      "head tilted slightly to the left, hand still touching the chin, eyes narrowed in thought",
+      "eyes closed, hand resting on the chin, deep in concentration",
+      "eyes open wide with a small spark of inspiration, hand lowering slightly from the chin",
+    ],
+    { totalMs: 3600, loop: "loop" },
+    { states: ["thinking"] }),
+
+  action("sleeping", "core", 4, { cols: 2, rows: 2 },
+    [
+      "curled up on the ground, eyes closed, sleeping peacefully",
+      "still curled up asleep, body rising slightly with a slow inhale",
+      "curled up asleep, body at its roundest with the breath held",
+      "curled up asleep, body sinking back down with a slow exhale",
+    ],
+    { totalMs: 4800, loop: "loop" },
+    { states: ["sleeping"] }),
+
+  action("error", "core", 3, { cols: 2, rows: 2 },
+    [
+      "startled, eyes wide open, both hands raised touching its cheeks",
+      "drooping, eyebrows angled up sadly, hands sliding down its cheeks",
+      "slumped shoulders, looking down with an apologetic frown, hands at its sides",
+    ],
+    { totalMs: 2800, loop: "loop" },
+    { states: ["error"] }),
+
+  action("notification", "core", 3, { cols: 2, rows: 2 },
+    [
+      "standing upright and alert, eyes wide, one arm raised straight up",
+      "waving the raised arm toward the left, mouth open as if calling out",
+      "waving the raised arm toward the right, eager hopeful expression",
+    ],
+    { totalMs: 2000, loop: "loop" },
+    { states: ["notification", "attention"] }),
+
   // ── idle-life ──────────────────────────────────────────────────────────
   action("yawn", "idle-life", 4, { cols: 2, rows: 2 },
     [

@@ -33,6 +33,7 @@
 
   const STAGE_ORDER = ["start", "generated", "extracted", "assembled", "written"];
   const CATEGORY_LABEL_KEYS = {
+    core: "studioCatCore",
     "idle-life": "studioCatIdle",
     context: "studioCatContext",
     touch: "studioCatTouch",
@@ -275,6 +276,29 @@
         }
       } catch (err) {
         ops.showToast((err && err.message) || t("toastSaveFailed"), { error: true });
+      }
+    });
+
+    // Use the active pet's look as the reference: lets the Studio derive a
+    // complete AI pet from a built-in pet (same identity, full action set).
+    const currentPetBtn = softBtn(t("studioUseCurrentPet"));
+    pickRow.control.appendChild(currentPetBtn);
+    currentPetBtn.addEventListener("click", async () => {
+      if (typeof window.studioAPI.useCurrentPet !== "function") return;
+      currentPetBtn.disabled = true;
+      try {
+        const res = await window.studioAPI.useCurrentPet();
+        if (res && res.status === "ok") {
+          view.reference = { path: res.path, dataUrl: res.dataUrl };
+          if (!view.petName.trim() && res.suggestedName) view.petName = res.suggestedName;
+          ops.requestRender({ content: true });
+        } else if (res && res.status === "error") {
+          ops.showToast(res.message, { error: true });
+        }
+      } catch (err) {
+        ops.showToast((err && err.message) || t("toastSaveFailed"), { error: true });
+      } finally {
+        currentPetBtn.disabled = false;
       }
     });
 
