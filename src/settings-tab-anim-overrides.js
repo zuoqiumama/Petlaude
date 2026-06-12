@@ -20,6 +20,13 @@
   let i18n = null;
   let readers = null;
 
+  // Companion slot types → the theme-override map field they persist into.
+  // Keyed by card.companionKey (a manifest behavior id / context trigger).
+  const COMPANION_SLOT_FIELDS = {
+    idleLife: "idleLife",
+    contextReaction: "contextReactions",
+  };
+
   function t(key) {
     return helpers.t(key);
   }
@@ -154,6 +161,7 @@
       tierGroup: card.tierGroup,
       originalFile: card.originalFile,
       reactionKey: card.reactionKey,
+      companionKey: card.companionKey,
     };
     let storedTimingValue = false;
     if (patch.transition && typeof patch.transition === "object") {
@@ -421,6 +429,8 @@
     }
     pruneEmptyObject(themeMap, "idleAnimations");
     pruneEmptyObject(themeMap, "reactions");
+    pruneEmptyObject(themeMap, "idleLife");
+    pruneEmptyObject(themeMap, "contextReactions");
     if (themeMap.hitbox && typeof themeMap.hitbox === "object") {
       pruneEmptyObject(themeMap.hitbox, "wide");
       pruneEmptyObject(themeMap, "hitbox");
@@ -454,6 +464,13 @@
       themeMap.reactions[pending.reactionKey] = themeMap.reactions[pending.reactionKey] || {};
       return themeMap.reactions[pending.reactionKey];
     }
+    const ensureField = COMPANION_SLOT_FIELDS[pending.slotType];
+    if (ensureField) {
+      if (!pending.companionKey) return null;
+      themeMap[ensureField] = themeMap[ensureField] || {};
+      themeMap[ensureField][pending.companionKey] = themeMap[ensureField][pending.companionKey] || {};
+      return themeMap[ensureField][pending.companionKey];
+    }
     return null;
   }
 
@@ -471,6 +488,10 @@
     }
     if (pending.slotType === "reaction") {
       return pending.reactionKey && themeMap.reactions ? themeMap.reactions[pending.reactionKey] || null : null;
+    }
+    const readField = COMPANION_SLOT_FIELDS[pending.slotType];
+    if (readField) {
+      return pending.companionKey && themeMap[readField] ? themeMap[readField][pending.companionKey] || null : null;
     }
     return null;
   }
@@ -511,6 +532,15 @@
         delete themeMap.reactions[pending.reactionKey];
       }
       pruneEmptyObject(themeMap, "reactions");
+      return;
+    }
+    const pruneField = COMPANION_SLOT_FIELDS[pending.slotType];
+    if (pruneField) {
+      if (themeMap[pruneField] && pending.companionKey && themeMap[pruneField][pending.companionKey]
+        && !Object.keys(themeMap[pruneField][pending.companionKey]).length) {
+        delete themeMap[pruneField][pending.companionKey];
+      }
+      pruneEmptyObject(themeMap, pruneField);
     }
   }
 
@@ -537,7 +567,8 @@
       themeMap.timings.autoReturn[pending.stateKey] = pending.autoReturnMs;
     }
     if (Object.prototype.hasOwnProperty.call(pending, "durationMs")) {
-      if (pending.slotType !== "idleAnimation" && pending.slotType !== "reaction") return false;
+      if (pending.slotType !== "idleAnimation" && pending.slotType !== "reaction"
+        && !COMPANION_SLOT_FIELDS[pending.slotType]) return false;
       entry.durationMs = pending.durationMs;
     }
     prunePendingThemeOverrideEntry(themeMap, pending);
@@ -666,6 +697,9 @@
       return card.tierGroup === "jugglingTiers" ? "juggling" : "working";
     }
     if (card.slotType === "idleAnimation") return "idle";
+    // Companion behaviors play as one-shot overlays (like reactions) rather than
+    // a persistent state; preview them through the reaction channel.
+    if (COMPANION_SLOT_FIELDS[card.slotType]) return "idle";
     return card.stateKey;
   }
 
@@ -681,6 +715,8 @@
       base.originalFile = card.originalFile;
     } else if (card.slotType === "reaction") {
       base.reactionKey = card.reactionKey;
+    } else if (COMPANION_SLOT_FIELDS[card.slotType]) {
+      base.companionKey = card.companionKey;
     } else {
       base.stateKey = card.stateKey;
     }
@@ -797,7 +833,20 @@
     return `${minSessions}-${maxSessions} sessions`;
   }
 
+  // Turn a manifest companion key ("nap-hint", "errorStreak") into a readable
+  // label by splitting camelCase + hyphens and capitalizing.
+  function prettifyCompanionKey(key) {
+    return String(key || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[-_]+/g, " ")
+      .replace(/^\w/, (c) => c.toUpperCase())
+      .trim();
+  }
+
   function getAnimOverrideTriggerLabel(card) {
+    if (COMPANION_SLOT_FIELDS[card.slotType] && card.companionKey) {
+      return prettifyCompanionKey(card.companionKey);
+    }
     switch (card.triggerKind) {
       case "idleTracked": return "Idle follow";
       case "idleStatic": return "Idle";
@@ -828,6 +877,8 @@
       case "clickRightReaction": return t("animReactionClickRight");
       case "annoyedReaction": return t("animReactionAnnoyed");
       case "doubleReaction": return t("animReactionDouble");
+      case "rapidClickReaction": return t("animReactionRapidClick");
+      case "dragReleaseReaction": return t("animReactionDragRelease");
       default: return card.triggerKind || card.stateKey || card.id;
     }
   }
@@ -841,6 +892,8 @@
       case "sleep": return t("animOverridesSectionSleep");
       case "mini": return t("animOverridesSectionMini");
       case "reactions": return t("animOverridesSectionReactions");
+      case "idleLife": return t("animOverridesSectionIdleLife");
+      case "context": return t("animOverridesSectionContext");
       default: return section.id;
     }
   }
@@ -1227,7 +1280,7 @@
   }
 
   function triggerPreviewOnce(card) {
-    if (card.slotType === "reaction") {
+    if (card.slotType === "reaction" || COMPANION_SLOT_FIELDS[card.slotType]) {
       window.settingsAPI.previewReaction({
         file: card.currentFile,
         durationMs: getAnimationPreviewDuration(null, card),
@@ -1277,6 +1330,12 @@
       const entry = map.reactions && map.reactions[card.reactionKey];
       return !!(hasMaterialEntryOverride(entry)
         || (hasTransitionFlag ? card.hasTransitionOverride : hasTransitionOverride(entry))
+        || (hasDurationFlag ? card.hasDurationOverride : (entry && Object.prototype.hasOwnProperty.call(entry, "durationMs"))));
+    }
+    const companionField = COMPANION_SLOT_FIELDS[card.slotType];
+    if (companionField) {
+      const entry = map[companionField] && map[companionField][card.companionKey];
+      return !!(hasMaterialEntryOverride(entry)
         || (hasDurationFlag ? card.hasDurationOverride : (entry && Object.prototype.hasOwnProperty.call(entry, "durationMs"))));
     }
     const entry = map.states && map.states[card.stateKey];
@@ -1676,7 +1735,9 @@
     }
     drawer.appendChild(sliders);
 
-    if (card.slotType !== "reaction") {
+    // Wide-hitbox is a state/tier concept; reactions and companion extras
+    // (idle-life behaviors, context reactions) don't carry the toggle.
+    if (card.slotType !== "reaction" && !COMPANION_SLOT_FIELDS[card.slotType]) {
       drawer.appendChild(buildAnimWideHitboxToggle(card));
     }
 
@@ -2009,7 +2070,7 @@
           ops.closeAssetPicker();
           const changed = !result.noop;
           if (changed) {
-            const previewPromise = card.slotType === "reaction"
+            const previewPromise = (card.slotType === "reaction" || COMPANION_SLOT_FIELDS[card.slotType])
               ? (window.settingsAPI && typeof window.settingsAPI.previewReaction === "function"
                   ? window.settingsAPI.previewReaction({
                       file: currentSelected.name,

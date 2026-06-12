@@ -566,7 +566,13 @@ function normalizeSlotOverride(entry, { allowDisabled = true } = {}) {
   return Object.keys(out).length > 0 ? out : null;
 }
 
-const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
+const REACTION_KEYS = new Set([
+  "drag", "clickLeft", "clickRight", "annoyed", "double",
+  // Context-Aware Companion touch reactions. The runtime reads these from the
+  // `reactions` map (Studio mirrors touchReactions → reactions), so they ride
+  // the existing reactions override channel rather than a separate slot.
+  "rapidClick", "dragRelease",
+]);
 
 // Per-file hitbox override: { file.svg: boolean }.
 // true  = force the file INTO the wide-hitbox set (even if the theme author didn't list it)
@@ -611,6 +617,22 @@ function normalizeStateOverridesMap(value) {
     if (typeof stateKey !== "string" || !stateKey) continue;
     const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
     if (cleanEntry) out[stateKey] = cleanEntry;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+// Companion override maps (idleLife behaviors, context reactions) are keyed by
+// a manifest-defined id/trigger string and store the same {file, durationMs,
+// transition} slot shape as reactions. Keys are not whitelisted here — the
+// manifest owns the namespace and the override UI only offers valid ones — but
+// each entry is slot-normalized so a hand-edited pref file can't inject junk.
+function normalizeKeyedSlotOverrideMap(value) {
+  if (!isPlainObject(value)) return null;
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof key !== "string" || !key) continue;
+    const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: false });
+    if (cleanEntry) out[key] = cleanEntry;
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -688,7 +710,8 @@ function normalizeThemeOverrides(value, defaultsValue) {
     // Back-compat: older prefs wrote state entries directly under themeId.
     const legacyStates = {};
     for (const [key, entry] of Object.entries(themeMap)) {
-      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox" || key === "sounds") continue;
+      if (key === "states" || key === "tiers" || key === "timings" || key === "idleAnimations" || key === "reactions" || key === "hitbox" || key === "sounds"
+        || key === "idleLife" || key === "contextReactions" || key === "touchReactions") continue;
       const cleanEntry = normalizeSlotOverride(entry, { allowDisabled: true });
       if (cleanEntry) legacyStates[key] = cleanEntry;
     }
@@ -720,6 +743,15 @@ function normalizeThemeOverrides(value, defaultsValue) {
 
     const reactions = normalizeReactionOverridesMap(themeMap.reactions);
     if (reactions) cleanThemeMap.reactions = reactions;
+
+    // Companion override maps. touchReactions is intentionally NOT persisted —
+    // touch reactions ride the `reactions` channel at runtime (see REACTION_KEYS),
+    // so the skip-list above only prevents them being mis-read as state overrides.
+    const idleLife = normalizeKeyedSlotOverrideMap(themeMap.idleLife);
+    if (idleLife) cleanThemeMap.idleLife = idleLife;
+
+    const contextReactions = normalizeKeyedSlotOverrideMap(themeMap.contextReactions);
+    if (contextReactions) cleanThemeMap.contextReactions = contextReactions;
 
     const hitbox = normalizeHitboxOverrides(themeMap.hitbox);
     if (hitbox) cleanThemeMap.hitbox = hitbox;

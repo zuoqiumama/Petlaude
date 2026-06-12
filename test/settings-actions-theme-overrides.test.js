@@ -68,6 +68,76 @@ test("settings theme override actions update an active state slot with explicit 
   ]);
 });
 
+test("settings theme override actions persist companion idleLife, context, and touch slots without disturbing others", () => {
+  const snapshot = {
+    theme: "mypet",
+    themeOverrides: {
+      mypet: {
+        states: { idle: { file: "custom-idle.svg" } },
+      },
+    },
+  };
+
+  // idleLife behavior file swap.
+  let result = themeOverrideCommands.setAnimationOverride(
+    { themeId: "mypet", slotType: "idleLife", companionKey: "yawn", file: "custom-yawn.svg" },
+    { snapshot, activateTheme: () => {} }
+  );
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.themeOverrides.mypet.idleLife, { yawn: { file: "custom-yawn.svg" } });
+  // Existing state override is preserved through the round-trip.
+  assert.deepStrictEqual(result.commit.themeOverrides.mypet.states, { idle: { file: "custom-idle.svg" } });
+
+  // Context reaction file + duration swap.
+  result = themeOverrideCommands.setAnimationOverride(
+    { themeId: "mypet", slotType: "contextReaction", companionKey: "smoothWork", file: "proud.svg", durationMs: 4000 },
+    { snapshot: { theme: "mypet", themeOverrides: result.commit.themeOverrides }, activateTheme: () => {} }
+  );
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.themeOverrides.mypet.contextReactions, {
+    smoothWork: { file: "proud.svg", durationMs: 4000 },
+  });
+  assert.deepStrictEqual(result.commit.themeOverrides.mypet.idleLife, { yawn: { file: "custom-yawn.svg" } });
+
+  // Touch reaction rides the reactions channel.
+  result = themeOverrideCommands.setAnimationOverride(
+    { themeId: "mypet", slotType: "reaction", reactionKey: "rapidClick", file: "spin.svg" },
+    { snapshot: { theme: "mypet", themeOverrides: result.commit.themeOverrides }, activateTheme: () => {} }
+  );
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(result.commit.themeOverrides.mypet.reactions, { rapidClick: { file: "spin.svg" } });
+});
+
+test("settings theme override actions reject malformed companion slots", () => {
+  const base = { snapshot: { theme: "mypet", themeOverrides: {} }, activateTheme: () => {} };
+  // Missing companionKey.
+  assert.strictEqual(
+    themeOverrideCommands.setAnimationOverride({ themeId: "mypet", slotType: "idleLife", file: "x.svg" }, base).status,
+    "error"
+  );
+  // Transitions are not supported on companion slots.
+  assert.strictEqual(
+    themeOverrideCommands.setAnimationOverride(
+      { themeId: "mypet", slotType: "contextReaction", companionKey: "smoothWork", transition: { in: 100, out: 100 } },
+      base
+    ).status,
+    "error"
+  );
+  // Reset sends the generic patch shape (file/transition/duration all null);
+  // the null transition must be accepted as a no-op, clearing the entry and the
+  // now-empty theme map.
+  const seeded = {
+    theme: "mypet",
+    themeOverrides: { mypet: { idleLife: { yawn: { file: "y.svg", durationMs: 5000 } } } },
+  };
+  const cleared = themeOverrideCommands.setAnimationOverride(
+    { themeId: "mypet", slotType: "idleLife", companionKey: "yawn", file: null, transition: null, durationMs: null },
+    { snapshot: seeded, activateTheme: () => {} }
+  );
+  assert.strictEqual(cleared.status, "ok");
+  assert.strictEqual(cleared.commit.themeOverrides.mypet, undefined, "empty theme map pruned");
+});
+
 test("settings theme override actions clear transition overrides that match the theme default", () => {
   const calls = [];
   const snapshot = {

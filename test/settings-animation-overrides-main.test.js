@@ -392,6 +392,88 @@ test("animation override cards expose theme-default transition state separately 
   }
 });
 
+test("animation override data surfaces companion idle-life, context, touch reactions and tier-less work states", () => {
+  const harness = createRuntimeHarness({
+    snapshot: {
+      themeOverrides: {
+        cloudling: {
+          idleLife: { yawn: { durationMs: 5000 } },
+        },
+      },
+    },
+    activeThemeFactory: (root) => makeTheme(root, {
+      // Studio-style pet: work states bound directly, no multi-session tiers.
+      states: {
+        idle: ["idle.svg"],
+        thinking: ["scripted.svg"],
+        sleeping: ["sleep.svg"],
+        working: ["work.svg"],
+        juggling: ["work.svg"],
+      },
+      _stateBindings: {
+        idle: { files: ["idle.svg"] },
+        thinking: { files: ["scripted.svg"] },
+        sleeping: { files: ["sleep.svg"] },
+        working: { files: ["work.svg"] },
+        juggling: { files: ["work.svg"] },
+      },
+      idleLife: {
+        enabled: true,
+        cooldownMs: 30000,
+        behaviors: [
+          { id: "yawn", file: "yawn.svg", duration: 3200, trigger: { idleMinMs: 22000, weight: 0.3 } },
+        ],
+      },
+      contextReactions: {
+        smoothWork: { file: "thumbsup.svg", duration: 3000 },
+      },
+      reactions: {
+        drag: { file: "drag.svg" },
+        rapidClick: { file: "dizzy.svg", duration: 2500 },
+      },
+    }),
+  });
+  try {
+    for (const name of ["work.svg", "yawn.svg", "thumbsup.svg", "dizzy.svg", "drag.svg"]) {
+      fs.writeFileSync(path.join(harness.assetsDir, name), "<svg viewBox=\"0 0 100 100\"></svg>", "utf8");
+    }
+    const data = harness.runtime.buildAnimationOverrideData();
+    const byId = (id) => data.cards.find((card) => card.id === id);
+
+    // Studio pet work states are replaceable even without tiers.
+    const working = byId("state:working");
+    assert.ok(working, "working state card present");
+    assert.strictEqual(working.slotType, "state");
+    assert.strictEqual(working.currentFile, "work.svg");
+    assert.ok(byId("state:juggling"), "juggling state card present");
+
+    // Companion idle-life behavior is a replaceable card with override metadata.
+    const yawn = byId("idleLife:yawn");
+    assert.ok(yawn, "idle-life card present");
+    assert.strictEqual(yawn.slotType, "idleLife");
+    assert.strictEqual(yawn.companionKey, "yawn");
+    assert.strictEqual(yawn.currentFile, "yawn.svg");
+    assert.strictEqual(yawn.supportsDuration, true);
+    assert.strictEqual(yawn.hasDurationOverride, true, "idleLife duration override reflected");
+
+    // Context reaction card.
+    const smooth = byId("contextReaction:smoothWork");
+    assert.ok(smooth, "context reaction card present");
+    assert.strictEqual(smooth.slotType, "contextReaction");
+    assert.strictEqual(smooth.companionKey, "smoothWork");
+    assert.strictEqual(smooth.currentFile, "thumbsup.svg");
+
+    // Touch reaction rides the reactions channel (runtime reads theme.reactions).
+    const rapid = byId("reaction:rapidClick");
+    assert.ok(rapid, "rapidClick reaction card present");
+    assert.strictEqual(rapid.slotType, "reaction");
+    assert.strictEqual(rapid.reactionKey, "rapidClick");
+    assert.strictEqual(rapid.currentFile, "dizzy.svg");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("animation override data builds tier cards with transition override metadata", () => {
   const harness = createRuntimeHarness({
     snapshot: {

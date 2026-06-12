@@ -22,6 +22,11 @@ const REACTION_ORDER = [
   { key: "clickRight", triggerKind: "clickRightReaction", supportsDuration: true },
   { key: "annoyed", triggerKind: "annoyedReaction", supportsDuration: true },
   { key: "double", triggerKind: "doubleReaction", supportsDuration: true },
+  // Context-Aware Companion touch reactions (present only when the theme defines
+  // them; Studio mirrors touchReactions → reactions, so the runtime reads them
+  // here). Absent keys are skipped by buildReactionCards.
+  { key: "rapidClick", triggerKind: "rapidClickReaction", supportsDuration: true },
+  { key: "dragRelease", triggerKind: "dragReleaseReaction", supportsDuration: true },
 ];
 
 const ANIMATION_OVERRIDES_EXPORT_DIALOG_STRINGS = {
@@ -922,6 +927,84 @@ function createSettingsAnimationOverridesMain(options = {}) {
     return cards;
   }
 
+  // Companion idle-life behaviors (yawn, snack, …). Keyed by manifest behavior
+  // id; each binds one file with a duration. slotType "idleLife".
+  function buildCompanionCard(slotType, sectionId, companionKey, triggerKind, currentFile, durationMs, overrideEntry, bindingLabel) {
+    if (!currentFile) return null;
+    const timingHint = buildTimingHint(currentFile, durationMs);
+    const preview = buildAnimationAssetPreview(currentFile);
+    const hasDurationOverride = !!(overrideEntry
+      && Object.prototype.hasOwnProperty.call(overrideEntry, "durationMs"));
+    return {
+      id: `${slotType}:${companionKey}`,
+      slotType,
+      sectionId,
+      companionKey,
+      triggerKind,
+      currentFile,
+      baseFile: currentFile,
+      currentFileUrl: preview.fileUrl,
+      currentFilePreviewUrl: preview.previewImageUrl,
+      needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
+      currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
+      previewPosterPending: preview.previewPosterPending,
+      bindingLabel,
+      transition: null,
+      transitionThemeDefault: null,
+      hasTransitionOverride: false,
+      supportsAutoReturn: false,
+      supportsDuration: true,
+      autoReturnMs: null,
+      durationMs: Number.isFinite(durationMs) ? durationMs : null,
+      hasDurationOverride,
+      hasAutoReturnOverride: false,
+      ...timingHint,
+      previewDurationMs: timingHint.previewDurationMs || durationMs,
+      displayHintWarning: false,
+      displayHintTarget: null,
+    };
+  }
+
+  function buildIdleLifeCards(themeOverrideMap) {
+    const activeTheme = getActiveTheme();
+    const behaviors = activeTheme && activeTheme.idleLife && Array.isArray(activeTheme.idleLife.behaviors)
+      ? activeTheme.idleLife.behaviors
+      : [];
+    const overrideMap = themeOverrideMap && themeOverrideMap.idleLife;
+    const cards = [];
+    for (const behavior of behaviors) {
+      if (!isPlainObject(behavior) || typeof behavior.id !== "string" || !behavior.id) continue;
+      if (typeof behavior.file !== "string" || !behavior.file) continue;
+      const durationMs = Number.isFinite(behavior.duration) ? behavior.duration : null;
+      const card = buildCompanionCard(
+        "idleLife", "idleLife", behavior.id, `idleLife:${behavior.id}`,
+        behavior.file, durationMs, overrideMap && overrideMap[behavior.id],
+        `idleLife.behaviors[${behavior.id}]`
+      );
+      if (card) cards.push(card);
+    }
+    return cards;
+  }
+
+  function buildContextReactionCards(themeOverrideMap) {
+    const activeTheme = getActiveTheme();
+    const map = activeTheme && isPlainObject(activeTheme.contextReactions) ? activeTheme.contextReactions : null;
+    if (!map) return [];
+    const overrideMap = themeOverrideMap && themeOverrideMap.contextReactions;
+    const cards = [];
+    for (const [key, entry] of Object.entries(map)) {
+      if (!isPlainObject(entry) || typeof entry.file !== "string" || !entry.file) continue;
+      const durationMs = Number.isFinite(entry.duration) ? entry.duration : null;
+      const card = buildCompanionCard(
+        "contextReaction", "context", key, `context:${key}`,
+        entry.file, durationMs, overrideMap && overrideMap[key],
+        `contextReactions.${key}`
+      );
+      if (card) cards.push(card);
+    }
+    return cards;
+  }
+
   function pushSection(sections, id, mode, cards) {
     if (!Array.isArray(cards) || cards.length === 0) return;
     sections.push({ id, mode: mode || null, cards });
@@ -957,6 +1040,17 @@ function createSettingsAnimationOverridesMain(options = {}) {
       "work",
       themeOverrideMap
     ));
+    // Studio / simple pets bind states.working & states.juggling directly with
+    // no multi-session tiers. Surface them as plain state cards so the work
+    // animations are still replaceable (built-in pets use tiers, so skip there).
+    if (!Array.isArray(activeTheme.workingTiers) || activeTheme.workingTiers.length === 0) {
+      const workingCard = buildStateCard("working", "working", themeOverrideMap, { sectionId: "work" });
+      if (workingCard) workCards.push(workingCard);
+    }
+    if (!Array.isArray(activeTheme.jugglingTiers) || activeTheme.jugglingTiers.length === 0) {
+      const jugglingCard = buildStateCard("juggling", "juggling", themeOverrideMap, { sectionId: "work" });
+      if (jugglingCard) workCards.push(jugglingCard);
+    }
     pushSection(sections, "work", null, workCards);
 
     const idleMode = activeTheme._capabilities && activeTheme._capabilities.idleMode;
@@ -1005,6 +1099,11 @@ function createSettingsAnimationOverridesMain(options = {}) {
     const reactionCards = buildReactionCards(themeOverrideMap);
     pushSection(sections, "reactions", null, reactionCards);
 
+    // Context-Aware Companion extras (present on Studio pets and any theme that
+    // opts in). Replaceable just like states/reactions.
+    pushSection(sections, "idleLife", null, buildIdleLifeCards(themeOverrideMap));
+    pushSection(sections, "context", null, buildContextReactionCards(themeOverrideMap));
+
     if (activeTheme.miniMode && activeTheme.miniMode.supported) {
       const miniCards = [];
       for (const stateKey of [
@@ -1029,7 +1128,8 @@ function createSettingsAnimationOverridesMain(options = {}) {
 
     for (const section of sections) {
       if (!section || !Array.isArray(section.cards)) continue;
-      if (section.id === "reactions") continue;
+      // Reactions and companion extras don't carry a wide-hitbox toggle.
+      if (section.id === "reactions" || section.id === "idleLife" || section.id === "context") continue;
       for (const card of section.cards) {
         const {
           wideHitboxEnabled,

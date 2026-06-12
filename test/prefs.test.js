@@ -1054,6 +1054,46 @@ describe("prefs.save", () => {
     });
   });
 
+  it("themeOverrides: companion idleLife/contextReactions round-trip; touchReactions is dropped", () => {
+    const p = makeTempPath();
+    const snap = prefs.getDefaults();
+    snap.themeOverrides = {
+      mypet: {
+        idleLife: {
+          yawn: { file: "custom-yawn.svg", durationMs: 5000 },
+          bogus: { nope: true }, // no usable field → dropped
+        },
+        contextReactions: {
+          smoothWork: { file: "proud.svg" },
+        },
+        // Touch reactions ride the reactions channel at runtime, so a stray
+        // touchReactions map is not persisted (only skip-listed from states).
+        touchReactions: {
+          rapidClick: { file: "spin.svg" },
+        },
+        reactions: {
+          rapidClick: { file: "spin.svg" },
+          dragRelease: { file: "shake.svg", durationMs: 2000 },
+        },
+      },
+    };
+    prefs.save(p, snap);
+    const { snapshot } = prefs.load(p);
+    assert.deepStrictEqual(snapshot.themeOverrides.mypet.idleLife, {
+      yawn: { file: "custom-yawn.svg", durationMs: 5000 },
+    });
+    assert.deepStrictEqual(snapshot.themeOverrides.mypet.contextReactions, {
+      smoothWork: { file: "proud.svg" },
+    });
+    assert.deepStrictEqual(snapshot.themeOverrides.mypet.reactions, {
+      rapidClick: { file: "spin.svg" },
+      dragRelease: { file: "shake.svg", durationMs: 2000 },
+    });
+    assert.strictEqual(snapshot.themeOverrides.mypet.touchReactions, undefined);
+    // Companion keys must never leak into the states map.
+    assert.strictEqual(snapshot.themeOverrides.mypet.states, undefined);
+  });
+
   it("themeOverrides.sounds: round-trips per-soundName file entries", () => {
     const p = makeTempPath();
     const snap = prefs.getDefaults();

@@ -173,6 +173,39 @@ describe("theme user override patching", () => {
     assert.notStrictEqual(patched.workingTiers, raw.workingTiers);
   });
 
+  it("patches companion idleLife behaviors and context reactions by key", () => {
+    const raw = baseTheme({
+      idleLife: {
+        enabled: true,
+        cooldownMs: 30000,
+        behaviors: [
+          { id: "yawn", file: "yawn.svg", duration: 3200, trigger: { idleMinMs: 22000, weight: 0.3 } },
+          { id: "snack", file: "snack.svg", duration: 4000, trigger: { idleMinMs: 30000, weight: 0.2 } },
+        ],
+      },
+      contextReactions: {
+        smoothWork: { file: "thumbsup.svg", duration: 3000 },
+        firstSession: { file: "wake.svg", duration: 2500 },
+      },
+    });
+    const patched = applyUserOverridesPatch(raw, {
+      idleLife: { yawn: { file: "custom-yawn.svg", durationMs: 5000 } },
+      contextReactions: { smoothWork: { file: "custom-proud.svg", durationMs: 4500 } },
+    });
+
+    const yawn = patched.idleLife.behaviors.find((b) => b.id === "yawn");
+    assert.strictEqual(yawn.file, "custom-yawn.svg");
+    assert.strictEqual(yawn.duration, 5000);
+    assert.strictEqual(yawn.trigger.weight, 0.3, "trigger preserved");
+    // Untouched behavior is unchanged.
+    assert.strictEqual(patched.idleLife.behaviors.find((b) => b.id === "snack").file, "snack.svg");
+    assert.deepStrictEqual(patched.contextReactions.smoothWork, { file: "custom-proud.svg", duration: 4500 });
+    assert.deepStrictEqual(patched.contextReactions.firstSession, { file: "wake.svg", duration: 2500 });
+    // Immutability: raw is untouched.
+    assert.strictEqual(raw.idleLife.behaviors[0].file, "yawn.svg");
+    assert.notStrictEqual(patched.idleLife, raw.idleLife);
+  });
+
   it("returns the raw object for invalid override payloads", () => {
     const raw = baseTheme();
     assert.strictEqual(applyUserOverridesPatch(raw, null), raw);

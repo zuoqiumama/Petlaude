@@ -288,6 +288,37 @@ function applyUserOverridesPatch(raw, overrides) {
     patched.idleAnimations = nextIdleAnimations;
   }
 
+  // Companion idle-life behaviors — keyed by manifest behavior id inside the
+  // behaviors array. Swap the bound file and/or duration; never the trigger.
+  const idleLifeOverrides = isPlainObject(overrides.idleLife) ? overrides.idleLife : null;
+  if (idleLifeOverrides && isPlainObject(raw.idleLife) && Array.isArray(raw.idleLife.behaviors)) {
+    const nextBehaviors = raw.idleLife.behaviors.map((b) => (isPlainObject(b) ? { ...b } : b));
+    for (const [behaviorId, entry] of Object.entries(idleLifeOverrides)) {
+      if (!isPlainObject(entry)) continue;
+      const behavior = nextBehaviors.find((b) => isPlainObject(b) && b.id === behaviorId);
+      if (!behavior) continue;
+      if (typeof entry.file === "string" && entry.file) behavior.file = entry.file;
+      if (Number.isFinite(entry.durationMs)) behavior.duration = entry.durationMs;
+    }
+    patched.idleLife = { ...raw.idleLife, behaviors: nextBehaviors };
+  }
+
+  // Companion context reactions — keyed map of trigger → { file, duration }.
+  const contextReactionOverrides = isPlainObject(overrides.contextReactions) ? overrides.contextReactions : null;
+  if (contextReactionOverrides && isPlainObject(raw.contextReactions)) {
+    const nextContext = { ...raw.contextReactions };
+    for (const [key, entry] of Object.entries(contextReactionOverrides)) {
+      if (!isPlainObject(entry)) continue;
+      const rawEntry = nextContext[key];
+      if (!isPlainObject(rawEntry)) continue;
+      const nextEntry = { ...rawEntry };
+      if (typeof entry.file === "string" && entry.file) nextEntry.file = entry.file;
+      if (Number.isFinite(entry.durationMs)) nextEntry.duration = entry.durationMs;
+      nextContext[key] = nextEntry;
+    }
+    patched.contextReactions = nextContext;
+  }
+
   return patched;
 }
 

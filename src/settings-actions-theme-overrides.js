@@ -14,9 +14,23 @@ const THEME_OVERRIDE_RESERVED_KEYS = new Set([
   "reactions",
   "hitbox",
   "sounds",
+  "idleLife",
+  "contextReactions",
 ]);
 const TIER_OVERRIDE_GROUPS = new Set(["workingTiers", "jugglingTiers"]);
-const REACTION_KEYS = new Set(["drag", "clickLeft", "clickRight", "annoyed", "double"]);
+const REACTION_KEYS = new Set([
+  "drag", "clickLeft", "clickRight", "annoyed", "double",
+  // Companion touch reactions ride the reactions channel (runtime reads them
+  // from theme.reactions; Studio mirrors touchReactions → reactions).
+  "rapidClick", "dragRelease",
+]);
+// Companion slot types → the theme field whose entries they override. Both are
+// keyed maps of id/trigger → { file, duration } (idleLife behaviors carry the
+// id inside the behaviors array; contextReactions is already a keyed map).
+const COMPANION_SLOT_FIELDS = new Map([
+  ["idleLife", "idleLife"],
+  ["contextReaction", "contextReactions"],
+]);
 
 const ONESHOT_OVERRIDE_STATES = new Set([
   "attention",
@@ -80,6 +94,17 @@ function cloneReactionOverrides(themeMap) {
   return out;
 }
 
+// Clone a companion keyed-override map (idleLife or contextReactions) so an
+// unrelated edit round-trips it untouched through buildThemeOverrideMap.
+function cloneCompanionOverrides(themeMap, field) {
+  const out = {};
+  if (!isPlainObject(themeMap) || !isPlainObject(themeMap[field])) return out;
+  for (const [key, entry] of Object.entries(themeMap[field])) {
+    if (isPlainObject(entry)) out[key] = { ...entry };
+  }
+  return out;
+}
+
 function cloneHitboxOverrides(themeMap) {
   const out = {};
   if (!isPlainObject(themeMap) || !isPlainObject(themeMap.hitbox)) return out;
@@ -105,6 +130,8 @@ function buildThemeOverrideMap({
   autoReturn,
   idleAnimations,
   reactions,
+  idleLife,
+  contextReactions,
   hitbox,
   sounds,
 }) {
@@ -117,6 +144,8 @@ function buildThemeOverrideMap({
   if (autoReturn && Object.keys(autoReturn).length > 0) out.timings = { autoReturn };
   if (idleAnimations && Object.keys(idleAnimations).length > 0) out.idleAnimations = idleAnimations;
   if (reactions && Object.keys(reactions).length > 0) out.reactions = reactions;
+  if (idleLife && Object.keys(idleLife).length > 0) out.idleLife = idleLife;
+  if (contextReactions && Object.keys(contextReactions).length > 0) out.contextReactions = contextReactions;
   if (hitbox && Object.keys(hitbox).length > 0) out.hitbox = hitbox;
   if (sounds && Object.keys(sounds).length > 0) out.sounds = sounds;
   return out;
@@ -180,6 +209,8 @@ function setThemeOverrideDisabled(payload, deps) {
     autoReturn: cloneAutoReturnOverrides(currentThemeMap),
     idleAnimations: cloneIdleAnimationOverrides(currentThemeMap),
     reactions: cloneReactionOverrides(currentThemeMap),
+    idleLife: cloneCompanionOverrides(currentThemeMap, "idleLife"),
+    contextReactions: cloneCompanionOverrides(currentThemeMap, "contextReactions"),
     hitbox: cloneHitboxOverrides(currentThemeMap),
     sounds: cloneSoundOverrides(currentThemeMap),
   });
@@ -200,8 +231,9 @@ function setAnimationOverride(payload, deps) {
   const { themeId, slotType } = payload;
   const idCheck = _validateAnimationOverrideThemeId(themeId);
   if (idCheck.status !== "ok") return idCheck;
-  if (slotType !== "state" && slotType !== "tier" && slotType !== "idleAnimation" && slotType !== "reaction") {
-    return { status: "error", message: "setAnimationOverride.slotType must be 'state', 'tier', 'idleAnimation', or 'reaction'" };
+  if (slotType !== "state" && slotType !== "tier" && slotType !== "idleAnimation"
+    && slotType !== "reaction" && !COMPANION_SLOT_FIELDS.has(slotType)) {
+    return { status: "error", message: "setAnimationOverride.slotType must be 'state', 'tier', 'idleAnimation', 'reaction', 'idleLife', or 'contextReaction'" };
   }
 
   const touchesFile = Object.prototype.hasOwnProperty.call(payload, "file");
@@ -251,6 +283,8 @@ function setAnimationOverride(payload, deps) {
   const nextAutoReturn = cloneAutoReturnOverrides(currentThemeMap);
   const nextIdleAnimations = cloneIdleAnimationOverrides(currentThemeMap);
   const nextReactions = cloneReactionOverrides(currentThemeMap);
+  const nextIdleLife = cloneCompanionOverrides(currentThemeMap, "idleLife");
+  const nextContextReactions = cloneCompanionOverrides(currentThemeMap, "contextReactions");
   const nextHitbox = cloneHitboxOverrides(currentThemeMap);
   const nextSounds = cloneSoundOverrides(currentThemeMap);
 
@@ -339,10 +373,10 @@ function setAnimationOverride(payload, deps) {
     }
     if (Object.keys(nextEntry).length > 0) nextIdleAnimations[originalFile] = nextEntry;
     else delete nextIdleAnimations[originalFile];
-  } else {
+  } else if (slotType === "reaction") {
     const { reactionKey } = payload;
     if (!REACTION_KEYS.has(reactionKey)) {
-      return { status: "error", message: "setAnimationOverride.reactionKey must be one of: drag, clickLeft, clickRight, annoyed, double" };
+      return { status: "error", message: `setAnimationOverride.reactionKey must be one of: ${[...REACTION_KEYS].join(", ")}` };
     }
     if (touchesAutoReturn) {
       return { status: "error", message: "setAnimationOverride.autoReturnMs is not supported for reaction slots" };
@@ -369,6 +403,38 @@ function setAnimationOverride(payload, deps) {
     }
     if (Object.keys(nextEntry).length > 0) nextReactions[reactionKey] = nextEntry;
     else delete nextReactions[reactionKey];
+  } else {
+    // Companion slots: idleLife behaviors and context reactions. Keyed by the
+    // manifest id/trigger; support file + duration replacement only (they don't
+    // go through the state transition or auto-return systems).
+    const { companionKey } = payload;
+    if (typeof companionKey !== "string" || !companionKey) {
+      return { status: "error", message: "setAnimationOverride.companionKey must be a non-empty string for companion slots" };
+    }
+    if (touchesAutoReturn) {
+      return { status: "error", message: "setAnimationOverride.autoReturnMs is not supported for companion slots" };
+    }
+    // Companion entries never store a transition. A null transition (sent by the
+    // generic reset path) is a harmless no-op; a real transition is rejected.
+    if (touchesTransition && payload.transition !== null) {
+      return { status: "error", message: "setAnimationOverride.transition is not supported for companion slots" };
+    }
+    const targetMap = slotType === "idleLife" ? nextIdleLife : nextContextReactions;
+    const nextEntry = { ...(targetMap[companionKey] || {}) };
+    if (touchesFile) {
+      if (payload.file === null) {
+        delete nextEntry.file;
+        delete nextEntry.sourceThemeId;
+      } else {
+        nextEntry.file = payload.file;
+      }
+    }
+    if (touchesDuration) {
+      if (payload.durationMs === null) delete nextEntry.durationMs;
+      else nextEntry.durationMs = payload.durationMs;
+    }
+    if (Object.keys(nextEntry).length > 0) targetMap[companionKey] = nextEntry;
+    else delete targetMap[companionKey];
   }
 
   const nextThemeMap = buildThemeOverrideMap({
@@ -378,6 +444,8 @@ function setAnimationOverride(payload, deps) {
     autoReturn: nextAutoReturn,
     idleAnimations: nextIdleAnimations,
     reactions: nextReactions,
+    idleLife: nextIdleLife,
+    contextReactions: nextContextReactions,
     hitbox: nextHitbox,
     sounds: nextSounds,
   });
@@ -439,6 +507,8 @@ function setSoundOverride(payload, deps) {
     autoReturn: cloneAutoReturnOverrides(currentThemeMap),
     idleAnimations: cloneIdleAnimationOverrides(currentThemeMap),
     reactions: cloneReactionOverrides(currentThemeMap),
+    idleLife: cloneCompanionOverrides(currentThemeMap, "idleLife"),
+    contextReactions: cloneCompanionOverrides(currentThemeMap, "contextReactions"),
     hitbox: cloneHitboxOverrides(currentThemeMap),
     sounds: nextSounds,
   });
