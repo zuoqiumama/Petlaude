@@ -14,6 +14,11 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { registerSessionIpc } = require("./session-ipc");
 const { createUsageAnalytics, encodeLedgerEntry } = require("./usage-analytics");
+const {
+  createOfficialRateLimitStore,
+  normalizeClaudeRateLimits,
+} = require("./official-rate-limits");
+const { createCodexRateLimitRuntime, resolveCodexHome } = require("./codex-rate-limits");
 const { compactLedgerLines } = require("./usage-ledger-compact");
 const { createPricingUpdater } = require("./pricing-updater");
 const { registerPricingIpc } = require("./pricing-ipc");
@@ -231,6 +236,7 @@ function _restartClawdNow() {
 let shortcutRuntime = null;
 let themeRuntime = null;
 let agentRuntime = null;
+let codexRateLimitRuntime = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalSidecar = null;
@@ -259,8 +265,16 @@ const _settingsController = createSettingsController({
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
-    startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
-    stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
+    startMonitorForAgent: (id) => {
+      const result = agentRuntime && agentRuntime.startMonitorForAgent(id);
+      if (id === "codex" && codexRateLimitRuntime) codexRateLimitRuntime.start();
+      return result;
+    },
+    stopMonitorForAgent: (id) => {
+      const result = agentRuntime && agentRuntime.stopMonitorForAgent(id);
+      if (id === "codex" && codexRateLimitRuntime) codexRateLimitRuntime.stop();
+      return result;
+    },
     syncIntegrationForAgent: (id) => agentRuntime ? agentRuntime.syncIntegrationForAgent(id) : false,
     repairIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.repairIntegrationForAgent(id, options) : false,
@@ -1148,6 +1162,9 @@ const usageModelResolver = createUsageModelResolver();
 const usageAnalytics = createUsageAnalytics({
   resolveModelForEvent: usageModelResolver.resolveModelForEvent,
 });
+const officialRateLimitStore = createOfficialRateLimitStore({
+  filePath: path.join(app.getPath("userData"), "official-rate-limits.json"),
+});
 let usageLedgerPath = null;
 
 // Runtime model-pricing auto-fetch (LiteLLM + OpenRouter). Shares the
@@ -1165,8 +1182,38 @@ const pricingUpdater = createPricingUpdater({
 });
 
 function getUsageSnapshot(options = {}) {
-  return usageAnalytics.getSnapshot(options);
+  return {
+    ...usageAnalytics.getSnapshot(options),
+    officialRateLimits: officialRateLimitStore.getSnapshot(),
+  };
 }
+
+function broadcastOfficialRateLimits() {
+  broadcastDashboardUsageSnapshot(() => getUsageSnapshot({ days: 370 }));
+  broadcastUsageHoverSnapshot(() => getUsageSnapshot({ days: 1 }));
+}
+
+function storeOfficialRateLimitSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.windows) || snapshot.windows.length === 0) return false;
+  try {
+    officialRateLimitStore.set(snapshot);
+  } catch (err) {
+    console.warn("Clawd: failed to persist official rate limits:", err && err.message);
+  }
+  broadcastOfficialRateLimits();
+  return true;
+}
+
+function recordOfficialRateLimits(payload) {
+  const snapshot = normalizeClaudeRateLimits(payload, { observedAt: Date.now() });
+  return storeOfficialRateLimitSnapshot(snapshot);
+}
+
+codexRateLimitRuntime = createCodexRateLimitRuntime({
+  version: app.getVersion(),
+  codexHome: resolveCodexHome(),
+  onSnapshot: storeOfficialRateLimitSnapshot,
+});
 
 const USAGE_LEDGER_KEEP_DAYS = 370;
 
@@ -1646,6 +1693,7 @@ agentRuntime = createAgentRuntimeMain({
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  requireClaudeStatusLineRelay: true,
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get doNotDisturb() { return doNotDisturb; },
@@ -1672,6 +1720,7 @@ const _serverCtx = {
   maybeStartRemoteApproval,
   replyOpencodePermission,
   permLog,
+  recordOfficialRateLimits,
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;
@@ -3064,6 +3113,9 @@ if (!gotTheLock) {
     // any network work, so ledger replay below uses the freshest offline data.
     pricingUpdater.init();
     initUsageLedger();
+    if (_isAgentEnabled({ agents: _settingsController.get("agents") }, "codex")) {
+      codexRateLimitRuntime.start();
+    }
     app.once("will-quit", () => { try { pricingUpdater.stop(); } catch (_) {} });
     queueTelegramApprovalSidecarSync("startup");
     createWindow();
@@ -3119,6 +3171,7 @@ if (!gotTheLock) {
       unsubscribeHardwareBuddySettings = null;
     }
     if (hardwareBuddyAdapter) hardwareBuddyAdapter.stop();
+    if (codexRateLimitRuntime) codexRateLimitRuntime.stop();
     _perm.cleanup();
     _server.cleanup();
     _updateBubble.cleanup();

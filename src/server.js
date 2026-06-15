@@ -27,6 +27,7 @@ const {
   shouldBypassCodexBubble,
   shouldBypassOpencodeBubble,
 } = require("./server-route-permission");
+const { handleRateLimitsPost } = require("./server-route-rate-limits");
 const {
   getCodexOfficialTurnKey,
   resolveCodexOfficialHookState,
@@ -201,6 +202,8 @@ function startHttpServer() {
         ctx,
         createRequestHookRecorder,
       });
+    } else if (req.method === "POST" && req.url === "/rate-limits") {
+      handleRateLimitsPost(req, res, { ctx });
     } else {
       res.writeHead(404);
       res.end();

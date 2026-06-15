@@ -1273,6 +1273,60 @@ describe("Hook installer deprecated hook cleanup", () => {
 });
 
 describe("Hook installer unregisterHooks", () => {
+  it("wraps and restores an existing Claude statusLine command", () => {
+    const settingsPath = makeTempSettings({
+      statusLine: {
+        type: "command",
+        command: "claude-hud",
+        padding: 2,
+        refreshInterval: 5,
+      },
+    });
+    const statusLineStatePath = path.join(path.dirname(settingsPath), "clawd-statusline.json");
+    const original = readSettings(settingsPath).statusLine;
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      statusLineStatePath,
+      nodeBin: "/usr/bin/node",
+      platform: "linux",
+      claudeVersionInfo: { version: "2.1.174", source: "test", status: "known" },
+    });
+
+    const installed = readSettings(settingsPath);
+    assert.match(installed.statusLine.command, /claude-statusline\.js/);
+    assert.strictEqual(installed.statusLine.padding, 2);
+    assert.strictEqual(installed.statusLine.refreshInterval, 5);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(statusLineStatePath, "utf8")), {
+      version: 1,
+      hadStatusLine: true,
+      original,
+    });
+
+    unregisterHooks({ settingsPath, statusLineStatePath });
+    assert.deepStrictEqual(readSettings(settingsPath).statusLine, original);
+    assert.strictEqual(fs.existsSync(statusLineStatePath), false);
+  });
+
+  it("removes the managed Claude statusLine when no command existed before install", () => {
+    const settingsPath = makeTempSettings({});
+    const statusLineStatePath = path.join(path.dirname(settingsPath), "clawd-statusline.json");
+
+    registerHooks({
+      silent: true,
+      settingsPath,
+      statusLineStatePath,
+      nodeBin: "/usr/bin/node",
+      platform: "linux",
+      claudeVersionInfo: { version: "2.1.174", source: "test", status: "known" },
+    });
+    assert.match(readSettings(settingsPath).statusLine.command, /claude-statusline\.js/);
+
+    unregisterHooks({ settingsPath, statusLineStatePath });
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(readSettings(settingsPath), "statusLine"), false);
+  });
+
   it("removes Clawd command hooks, HTTP hook, and auto-start while preserving third-party hooks", () => {
     const settingsPath = makeTempSettings({
       hooks: {

@@ -2,10 +2,16 @@
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { ACTIONS } = require("../src/companion/action-manifest");
+const {
+  STUDIO_QUALITY_VERSION,
+  actionQualityFileName,
+  actionFrameFileNames,
+} = require("../src/studio/generation-contract");
 
 const {
   getThemeMetadata,
@@ -66,6 +72,18 @@ function writeTheme(baseDir, id, json, assets = {}) {
     fs.writeFileSync(absPath, content, "utf8");
   }
   return themeDir;
+}
+
+function addStudioActionAssets(assets, action) {
+  if (!assets["reference.png"]) assets["reference.png"] = "canonical-reference";
+  assets[`${action.id}.svg`] = "<svg/>";
+  for (const filename of actionFrameFileNames(action)) assets[filename] = "png";
+  assets[actionQualityFileName(action.id)] = JSON.stringify({
+    qualityVersion: STUDIO_QUALITY_VERSION,
+    actionId: action.id,
+    frames: action.frames,
+    referenceSha256: crypto.createHash("sha256").update(assets["reference.png"]).digest("hex"),
+  });
 }
 
 describe("theme metadata preview helpers", () => {
@@ -187,7 +205,7 @@ describe("theme metadata facade helpers", () => {
     assert.ok(meta.capabilities);
   });
 
-  it("reports incomplete AI Studio action coverage from bound generated assets", () => {
+  it("does not count a legacy bound SVG without the current quality marker and frame set", () => {
     const { userThemesDir } = makeTempRoot();
     const raw = validThemeJson({
       name: "Partial Studio Pet",
@@ -207,10 +225,45 @@ describe("theme metadata facade helpers", () => {
 
     assert.deepStrictEqual(meta.studioPet, {
       complete: false,
-      generatedActionCount: 1,
+      generatedActionCount: 0,
       totalActionCount: ACTIONS.length,
-      missingActionIds: ACTIONS.slice(1).map((action) => action.id),
+      missingActionIds: ACTIONS.map((action) => action.id),
     });
+  });
+
+  it("counts generated sleep-sequence and mini-mode assets as bound", () => {
+    const { userThemesDir } = makeTempRoot();
+    const sleepActions = ACTIONS.filter((a) => a.category === "sleep");
+    const miniActions = ACTIONS.filter((a) => a.category === "mini");
+
+    const miniStates = {};
+    for (const a of miniActions) miniStates[a.id] = [`${a.id}.svg`];
+    // validThemeJson already binds the sleep states (yawning…waking) to <id>.svg.
+    const raw = validThemeJson({
+      name: "Sleepy Peeker",
+      author: "Clawd AI Studio",
+      sleepSequence: { mode: "full" },
+      miniMode: { supported: true, flipAssets: true, offsetRatio: 0.4, states: miniStates },
+    });
+
+    const assets = {};
+    addStudioActionAssets(assets, ACTIONS.find((action) => action.id === "idle"));
+    for (const action of [...sleepActions, ...miniActions]) addStudioActionAssets(assets, action);
+    const themeDir = writeTheme(userThemesDir, "sleepy-peeker", raw, assets);
+
+    const meta = getThemeMetadata("sleepy-peeker", {
+      readThemeJson: () => ({ raw, isBuiltin: false, themeDir }),
+    });
+
+    const missing = new Set(meta.studioPet.missingActionIds);
+    for (const a of [...sleepActions, ...miniActions]) {
+      assert.ok(!missing.has(a.id), `${a.id} should be recognized as a generated asset`);
+    }
+    assert.strictEqual(
+      meta.studioPet.generatedActionCount,
+      1 + sleepActions.length + miniActions.length,
+      "idle + every sleep + every mini asset is counted",
+    );
   });
 
   it("scans built-in and user metadata while skipping scaffold, malformed, and duplicate user themes", () => {

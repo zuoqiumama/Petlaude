@@ -24,13 +24,13 @@ function fakeSafeStorage(available = true) {
 }
 
 describe("studio-config with encryption available", () => {
-  it("stores baseUrl/model in plain prefs and the key encrypted (never plaintext)", () => {
+  it("stores the baseUrl and encrypted key without persisting a model override", () => {
     const store = fakeStore();
     const cfg = createStudioConfig({ safeStorage: fakeSafeStorage(true), store });
     const res = cfg.saveConfig({ baseUrl: "https://api.example.com/draw", model: "gpt-image-2", apiKey: "sk-secret" });
     assert.strictEqual(res.keyPersisted, true);
     assert.strictEqual(store.get("studio.baseUrl"), "https://api.example.com/draw");
-    assert.strictEqual(store.get("studio.model"), "gpt-image-2");
+    assert.strictEqual(store.get("studio.model"), undefined);
     // encrypted blob present, and the plaintext key is nowhere in the store
     const enc = store.get("studio.apiKeyEnc");
     assert.ok(enc && typeof enc === "string");
@@ -43,7 +43,7 @@ describe("studio-config with encryption available", () => {
     cfg.saveConfig({ baseUrl: "https://x.example", model: "m", apiKey: "sk-abc" });
     const loaded = cfg.loadConfig();
     assert.strictEqual(loaded.baseUrl, "https://x.example");
-    assert.strictEqual(loaded.model, "m");
+    assert.strictEqual(loaded.model, "gpt-image-2");
     assert.strictEqual(loaded.apiKey, "sk-abc");
   });
 });
@@ -60,6 +60,17 @@ describe("studio-config without encryption", () => {
 });
 
 describe("studio-config validation", () => {
+  it("always uses gpt-image-2 and ignores legacy or caller-provided model values", () => {
+    const store = fakeStore();
+    store.set("studio.model", "legacy-image-model");
+    const cfg = createStudioConfig({ safeStorage: fakeSafeStorage(true), store });
+
+    assert.strictEqual(cfg.loadConfig().model, "gpt-image-2");
+    cfg.saveConfig({ baseUrl: "https://api.example.com", model: "caller-override", apiKey: "sk-x" });
+    assert.strictEqual(cfg.loadConfig().model, "gpt-image-2");
+    assert.notStrictEqual(store.get("studio.model"), "caller-override");
+  });
+
   it("rejects a non-https baseUrl", () => {
     const cfg = createStudioConfig({ safeStorage: fakeSafeStorage(true), store: fakeStore() });
     assert.throws(() => cfg.saveConfig({ baseUrl: "http://insecure", model: "m", apiKey: "k" }), /https/);

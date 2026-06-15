@@ -1393,24 +1393,83 @@ function formatClockTime(ms) {
   }
 }
 
-// Always anchored to "now" (not the selected period): it answers "how much of
-// my current 5-hour subscription window have I used".
-function createRateWindowPanel() {
-  const windows = Array.isArray(usageSnapshot && usageSnapshot.rateWindows)
-    ? usageSnapshot.rateWindows
-    : [];
-  const panel = document.createElement("div");
-  panel.className = "usage-panel usage-rate-window-panel";
-  panel.appendChild(createText("h3", "usage-panel-title", t("usageRateWindowTitle")));
-  if (!windows.length) {
-    panel.appendChild(createText("div", "usage-empty", t("usageRateWindowIdle")));
-    return panel;
-  }
-  const list = document.createElement("div");
-  list.className = "usage-rate-window-list";
+const OFFICIAL_RATE_LIMIT_STALE_MS = 30 * 60 * 1000;
+
+function rateLimitWindowLabel(entry) {
+  if (entry.kind === "fiveHour") return t("usageRateLimitFiveHour");
+  if (entry.kind === "sevenDay") return t("usageRateLimitSevenDay");
+  const hours = Math.round((Number(entry.durationMinutes) || 0) / 60);
+  return hours > 0 ? `${hours}h` : t("usageRateLimitWindow");
+}
+
+function createOfficialRateWindowRows(officialEntries, now) {
+  const rows = [];
+  officialEntries.forEach((provider) => {
+    const stale = !Number.isFinite(provider.observedAt)
+      || now - provider.observedAt > OFFICIAL_RATE_LIMIT_STALE_MS;
+    (Array.isArray(provider.windows) ? provider.windows : []).forEach((entry) => {
+      if (!Number.isFinite(entry.usedPercent)
+        || !Number.isFinite(entry.resetsAt)
+        || entry.resetsAt <= now) return;
+      const row = document.createElement("div");
+      row.className = "usage-rate-window-row usage-rate-window-official";
+      const head = document.createElement("div");
+      head.className = "usage-rate-window-head";
+      const source = document.createElement("span");
+      source.className = "usage-rate-window-source";
+      source.appendChild(document.createTextNode(
+        `${agentLabel(provider.agentId)} / ${rateLimitWindowLabel(entry)}`
+      ));
+      source.appendChild(createText(
+        "span",
+        `usage-rate-window-badge${stale ? " stale" : ""}`,
+        stale ? t("usageRateLimitCached") : t("usageRateLimitOfficial")
+      ));
+      head.appendChild(source);
+      const remainingMs = Math.max(0, entry.resetsAt - now);
+      const resets = t("usageRateWindowResets")
+        .replace("{time}", formatClockTime(entry.resetsAt))
+        .replace("{left}", formatUsageDuration(remainingMs));
+      head.appendChild(createText("span", "usage-rate-window-resets", resets));
+      row.appendChild(head);
+
+      const bar = document.createElement("span");
+      bar.className = "usage-model-bar usage-rate-window-bar";
+      const fill = document.createElement("span");
+      fill.style.width = `${Math.round(Math.min(100, Math.max(0, entry.usedPercent)))}%`;
+      bar.appendChild(fill);
+      row.appendChild(bar);
+
+      const stats = document.createElement("div");
+      stats.className = "usage-rate-window-stats";
+      stats.appendChild(createText(
+        "span",
+        "",
+        t("usageRateLimitUsed").replace("{n}", trimFixed(entry.usedPercent))
+      ));
+      if (provider.planType) {
+        stats.appendChild(createText("span", "muted", provider.planType));
+      }
+      row.appendChild(stats);
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+function estimatedAgentId(source) {
+  const value = String(source || "").toLowerCase();
+  if (value === "claude" || value === "claude-code") return "claude-code";
+  if (value === "codex") return "codex";
+  return value;
+}
+
+function createEstimatedRateWindowRows(windows, coveredAgents) {
+  const rows = [];
   windows.forEach((entry) => {
+    if (coveredAgents.has(estimatedAgentId(entry.source))) return;
     const row = document.createElement("div");
-    row.className = "usage-rate-window-row";
+    row.className = "usage-rate-window-row usage-rate-window-estimated";
     const head = document.createElement("div");
     head.className = "usage-rate-window-head";
     head.appendChild(createText("span", "usage-rate-window-source", sourceLabel(entry.source)));
@@ -1420,7 +1479,7 @@ function createRateWindowPanel() {
     head.appendChild(createText("span", "usage-rate-window-resets", resets));
     row.appendChild(head);
     const bar = document.createElement("span");
-    bar.className = "usage-model-bar usage-rate-window-bar";
+    bar.className = "usage-model-bar usage-rate-window-bar estimated";
     const fill = document.createElement("span");
     fill.style.width = `${Math.max(2, Math.round((entry.elapsedRatio || 0) * 100))}%`;
     bar.appendChild(fill);
@@ -1437,8 +1496,51 @@ function createRateWindowPanel() {
       ));
     }
     row.appendChild(stats);
-    list.appendChild(row);
+    rows.push(row);
   });
+  return rows;
+}
+
+// Always anchored to now. Official provider quota wins; the local chained
+// activity window remains visible only for providers without an official feed.
+function createRateWindowPanel() {
+  const storedOfficialRateLimits = usageSnapshot && usageSnapshot.officialRateLimits
+    && typeof usageSnapshot.officialRateLimits === "object"
+    ? Object.values(usageSnapshot.officialRateLimits).filter((entry) => (
+        entry && Array.isArray(entry.windows) && entry.windows.length > 0
+      ))
+    : [];
+  const windows = Array.isArray(usageSnapshot && usageSnapshot.rateWindows)
+    ? usageSnapshot.rateWindows
+    : [];
+  const now = Date.now();
+  const officialRateLimits = storedOfficialRateLimits
+    .map((provider) => ({
+      ...provider,
+      windows: provider.windows.filter((entry) => (
+        Number.isFinite(entry.resetsAt) && entry.resetsAt > now
+      )),
+    }))
+    .filter((provider) => provider.windows.length > 0);
+  const coveredAgents = new Set(officialRateLimits.map((entry) => entry.agentId));
+  const rows = [
+    ...createOfficialRateWindowRows(officialRateLimits, now),
+    ...createEstimatedRateWindowRows(windows, coveredAgents),
+  ];
+  const panel = document.createElement("div");
+  panel.className = "usage-panel usage-rate-window-panel";
+  panel.appendChild(createText(
+    "h3",
+    "usage-panel-title",
+    t(officialRateLimits.length ? "usageRateLimitsTitle" : "usageRateWindowTitle")
+  ));
+  if (!rows.length) {
+    panel.appendChild(createText("div", "usage-empty", t("usageRateWindowIdle")));
+    return panel;
+  }
+  const list = document.createElement("div");
+  list.className = "usage-rate-window-list";
+  rows.forEach((row) => list.appendChild(row));
   panel.appendChild(list);
   return panel;
 }

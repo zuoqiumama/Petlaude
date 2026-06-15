@@ -777,6 +777,26 @@ h1 {
 .usage-rate-window-source {
   font-weight: 600;
   font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.usage-rate-window-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #2563eb;
+  background: rgba(59, 130, 246, 0.12);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.usage-rate-window-badge.stale {
+  color: var(--muted);
+  background: var(--surface-alt);
 }
 
 .usage-rate-window-resets {
@@ -786,6 +806,10 @@ h1 {
 
 .usage-rate-window-bar > span {
   background: linear-gradient(90deg, #38bdf8, #6b7fff);
+}
+
+.usage-rate-window-bar.estimated > span {
+  background: linear-gradient(90deg, #a8a29e, #78716c);
 }
 
 .usage-rate-window-stats {

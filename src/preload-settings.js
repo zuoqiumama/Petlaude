@@ -172,16 +172,17 @@ contextBridge.exposeInMainWorld("pricing", {
 //
 // Surface: window.studioAPI
 //
-//   getActions()                  Promise<Array<{id, category, frames, durationMs}>>
+//   getActions()                  Promise<Array<{id, category, frames, durationMs, previewSequence, previewKeyTimes}>>
+//   getActionStatuses(payload)    Promise<Array<{actionId, stage, previewUrl, previewFrameUrls}>>
 //   getConfig()                   Promise<{ baseUrl, model, hasKey }>  (key never exposed)
 //   saveConfig(cfg)               Promise<{ status, keyPersisted?, message? }>
-//   testConfig()                  Promise<{ status, note?, message? }>
+//   testConfig(cfg)               Promise<{ status, note?, message? }>
 //   pickReference()               Promise<{ status, path?, dataUrl?, message? }>
 //   useCurrentPet()               Promise<{ status, path?, dataUrl?, suggestedName?, message? }>
 //                                 — snapshot the active pet as the reference image
 //   generate(payload)             Promise<{ status, themeId?, result?, summary?, message? }>
 //                                 payload: { mode?: "all", actionId?, petName, referencePath }
-//   onProgress(cb)                cb({ actionId, stage, ... }) — generation progress stream
+//   onProgress(cb)                cb({ actionId, stage, previewUrl?, previewFrameUrls?, ... }) — generation progress stream
 const studioProgressListeners = new Set();
 ipcRenderer.on("studio:progress", (_event, payload) => {
   for (const cb of studioProgressListeners) {
@@ -190,9 +191,10 @@ ipcRenderer.on("studio:progress", (_event, payload) => {
 });
 contextBridge.exposeInMainWorld("studioAPI", {
   getActions: () => ipcRenderer.invoke("studio:get-actions"),
+  getActionStatuses: (payload) => ipcRenderer.invoke("studio:get-action-statuses", payload),
   getConfig: () => ipcRenderer.invoke("studio:get-config"),
   saveConfig: (cfg) => ipcRenderer.invoke("studio:save-config", cfg),
-  testConfig: () => ipcRenderer.invoke("studio:test-config"),
+  testConfig: (cfg) => ipcRenderer.invoke("studio:test-config", cfg),
   pickReference: () => ipcRenderer.invoke("studio:pick-reference"),
   useCurrentPet: () => ipcRenderer.invoke("studio:use-current-pet"),
   generate: (payload) => ipcRenderer.invoke("studio:generate", payload),

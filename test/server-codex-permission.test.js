@@ -211,6 +211,48 @@ describe("Codex official /permission path", () => {
     ]);
   });
 
+  it("does not show a bubble when Codex Auto-review owns the approval", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      isCodexPermissionInterceptEnabled: () => true,
+    });
+    const res = await callPermission(handler, {
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:auto-review",
+      approvals_reviewer: "auto_review",
+      permission_mode: "default",
+      tool_name: "Bash",
+      tool_input: { command: "git clone https://example.invalid/repo.git" },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.body, "");
+    assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(shown.length, 0);
+    assert.strictEqual(updates.length, 0);
+  });
+
+  it("does not show a bubble for Codex modes that do not ask the user", async () => {
+    for (const permissionMode of ["dontAsk", "bypassPermissions"]) {
+      const { handler, pendingPermissions, updates, shown } = startServer({
+        isCodexPermissionInterceptEnabled: () => true,
+      });
+      const res = await callPermission(handler, {
+        agent_id: "codex",
+        hook_source: "codex-official",
+        session_id: `codex:${permissionMode}`,
+        permission_mode: permissionMode,
+        tool_name: "Bash",
+        tool_input: { command: "git status --short" },
+      });
+
+      assert.strictEqual(res.statusCode, 204);
+      assert.strictEqual(pendingPermissions.length, 0);
+      assert.strictEqual(shown.length, 0);
+      assert.strictEqual(updates.length, 0);
+    }
+  });
+
   it("marks native PermissionRequest notification sound muted when the Codex switch is off", async () => {
     const { handler, updates } = startServer({
       isCodexPermissionInterceptEnabled: () => false,

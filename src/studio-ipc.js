@@ -9,11 +9,14 @@
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const { pathToFileURL } = require("url");
 
 const { ACTIONS } = require("./companion/action-manifest");
 const { createStudioRuntime } = require("./studio/studio-runtime");
 const { ensurePetTheme } = require("./studio/pet-theme");
 const { normalizeBaseUrl } = require("./studio/imagegen-client");
+const { buildSequence, boundaries } = require("./studio/svg-assemble");
+const { getThemeReferenceFingerprint, hasCompleteActionAssets } = require("./studio/generation-contract");
 
 const REFERENCE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const MAX_REFERENCE_BYTES = 10 * 1024 * 1024;
@@ -56,6 +59,53 @@ function defaultHttpGet(url, headers, timeoutMs = 15000) {
   });
 }
 
+function buildPreviewFileUrl(assetPath) {
+  const stat = fs.statSync(assetPath);
+  if (!stat.isFile()) return null;
+  const url = pathToFileURL(assetPath);
+  url.searchParams.set("_studioPreview", String(Math.floor(stat.mtimeMs)));
+  return url.href;
+}
+
+function buildActionPreview(themeDir, actionId, referenceSha256 = null) {
+  const action = ACTIONS.find((entry) => entry.id === actionId);
+  if (!action || !hasCompleteActionAssets(themeDir, action, referenceSha256)) return null;
+  try {
+    const previewFrameUrls = Array.from({ length: action.frames }, (_, index) => (
+      buildPreviewFileUrl(path.join(themeDir, "assets", `${actionId}-frame-${index + 1}.png`))
+    ));
+    if (previewFrameUrls.some((url) => !url)) return null;
+    return { previewUrl: previewFrameUrls[0], previewFrameUrls };
+  } catch {
+    return null;
+  }
+}
+
+function findStudioThemeDirByName(userThemesDir, petName) {
+  const wanted = String(petName || "").trim();
+  let matches = [];
+  try {
+    matches = fs.readdirSync(userThemesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(userThemesDir, entry.name))
+      .filter((themeDir) => {
+        try {
+          const theme = JSON.parse(fs.readFileSync(path.join(themeDir, "theme.json"), "utf8"));
+          return theme.author === "Clawd AI Studio" && (!wanted || theme.name === wanted);
+        } catch {
+          return false;
+        }
+      });
+  } catch {
+    return null;
+  }
+  matches.sort((a, b) => {
+    try { return fs.statSync(path.join(b, "theme.json")).mtimeMs - fs.statSync(path.join(a, "theme.json")).mtimeMs; }
+    catch { return 0; }
+  });
+  return matches[0] || null;
+}
+
 function registerStudioIpc(options = {}) {
   const ipcMain = requiredDependency(options.ipcMain, "ipcMain");
   const dialog = requiredDependency(options.dialog, "dialog");
@@ -92,7 +142,25 @@ function registerStudioIpc(options = {}) {
     category: a.category,
     frames: a.frames,
     durationMs: a.anim.totalMs,
+    previewSequence: buildSequence(a.frames, a.anim.loop || "once"),
+    previewKeyTimes: boundaries(
+      buildSequence(a.frames, a.anim.loop || "once"),
+      a.anim.hold || {},
+    ).map((value) => value / 100),
   })));
+
+  handle("studio:get-action-statuses", (_event, payload) => {
+    const themeDir = findStudioThemeDirByName(userThemesDir, payload && payload.petName);
+    if (!themeDir) return [];
+    const referenceSha256 = getThemeReferenceFingerprint(themeDir);
+    let petName = "";
+    try { petName = JSON.parse(fs.readFileSync(path.join(themeDir, "theme.json"), "utf8")).name || ""; }
+    catch { /* status list can still be returned */ }
+    return ACTIONS.flatMap((action) => {
+      const preview = buildActionPreview(themeDir, action.id, referenceSha256);
+      return preview ? [{ actionId: action.id, stage: "written", ...preview, petName }] : [];
+    });
+  });
 
   handle("studio:get-config", () => {
     const { baseUrl, model, apiKey } = studioConfig.loadConfig();
@@ -113,8 +181,12 @@ function registerStudioIpc(options = {}) {
     }
   });
 
-  handle("studio:test-config", async () => {
-    const { baseUrl, apiKey } = studioConfig.loadConfig();
+  handle("studio:test-config", async (_event, cfg) => {
+    const saved = studioConfig.loadConfig();
+    const input = cfg && typeof cfg === "object" ? cfg : {};
+    const baseUrl = typeof input.baseUrl === "string" ? input.baseUrl.trim() : saved.baseUrl;
+    const draftKey = typeof input.apiKey === "string" ? input.apiKey.trim() : "";
+    const apiKey = draftKey || saved.apiKey;
     if (!baseUrl) return { status: "error", message: "baseUrl not configured" };
     if (!apiKey) return { status: "error", message: "API key not configured" };
     try {
@@ -126,9 +198,7 @@ function registerStudioIpc(options = {}) {
       );
       if (res.status && res.status >= 200 && res.status < 300) return { status: "ok" };
       if (res.status === 401 || res.status === 403) return { status: "error", message: `auth rejected (HTTP ${res.status})` };
-      // Some providers don't expose /v1/models — a non-auth error still proves
-      // the endpoint is reachable, so report it as reachable-with-note.
-      return { status: "ok", note: `endpoint reachable (HTTP ${res.status})` };
+      return { status: "error", message: `connection test failed (HTTP ${res.status || "unknown"})` };
     } catch (err) {
       return { status: "error", message: (err && err.message) || "request failed" };
     }
@@ -160,7 +230,12 @@ function registerStudioIpc(options = {}) {
     }
     const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : `image/${ext.slice(1)}`;
     const dataUrl = `data:${mime};base64,${fs.readFileSync(filePath).toString("base64")}`;
-    return { status: "ok", path: filePath, dataUrl };
+    return {
+      status: "ok",
+      path: filePath,
+      dataUrl,
+      suggestedName: path.basename(filePath, path.extname(filePath)),
+    };
   });
 
   // Snapshot the active pet's look into a PNG reference so the Studio can
@@ -253,25 +328,53 @@ function registerStudioIpc(options = {}) {
         userThemesDir,
         templateDir,
       });
+      const referenceSha256 = getThemeReferenceFingerprint(themeDir);
       const runtime = createStudioRuntime({
         themeDir,
         referencePath,
         config,
         deps: { processor: getProcessor(), ...runtimeDeps },
-        onProgress: sendProgress,
+        onProgress: (evt) => {
+          // The renderer only flashes a transient toast, so log the real
+          // failure/retry reason to the main process too — otherwise a failed
+          // run is undiagnosable ("Failed" with no cause, no record).
+          if (evt && (evt.stage === "error" || evt.stage === "retry") && evt.error) {
+            console.warn(`Clawd Studio: ${evt.actionId} ${evt.stage}: ${evt.error}`);
+          }
+          const preview = evt && evt.stage === "written"
+            ? buildActionPreview(themeDir, evt.actionId, referenceSha256)
+            : null;
+          sendProgress(preview ? { ...evt, ...preview } : evt);
+        },
       });
 
       if (input.mode === "all") {
         const summary = await runtime.generateAll();
         onThemesChanged({ themeId });
-        return { status: "ok", themeId, summary };
+        return {
+          status: "ok",
+          themeId,
+          summary: {
+            ...summary,
+            results: summary.results.map((result) => ({
+              ...result,
+              ...buildActionPreview(themeDir, result.actionId, referenceSha256),
+            })),
+          },
+        };
       }
       const actionId = String(input.actionId || "");
       const result = await runtime.generateAction(actionId);
       onThemesChanged({ themeId });
-      return { status: "ok", themeId, result };
+      return {
+        status: "ok",
+        themeId,
+        result: { ...result, ...buildActionPreview(themeDir, actionId, referenceSha256) },
+      };
     } catch (err) {
-      return { status: "error", message: (err && err.message) || "generation failed" };
+      const message = (err && err.message) || "generation failed";
+      console.warn(`Clawd Studio: generation failed: ${message}`);
+      return { status: "error", message };
     } finally {
       generating = false;
     }

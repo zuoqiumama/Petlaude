@@ -1,8 +1,9 @@
 "use strict";
 
 // ── Studio API config store ──────────────────────────────────────────────────
-// Persists the image-gen provider config. baseUrl + model are plain prefs; the
-// API key is encrypted at rest with Electron safeStorage (OS keychain) and is
+// Persists the image-gen provider config. The base URL is a plain pref and the
+// model is fixed by Studio; the API key is encrypted at rest with Electron
+// safeStorage (OS keychain) and is
 // NEVER written to prefs in plaintext, logged, or committed. If OS encryption
 // is unavailable, the key is kept in memory for the session only and not
 // persisted. `safeStorage` and `store` are injected for testability.
@@ -10,6 +11,7 @@
 const KEY_BASEURL = "studio.baseUrl";
 const KEY_MODEL = "studio.model";
 const KEY_APIKEY_ENC = "studio.apiKeyEnc";
+const STUDIO_IMAGE_MODEL = "gpt-image-2";
 
 function createStudioConfig(deps = {}) {
   const safeStorage = deps.safeStorage || require("electron").safeStorage;
@@ -20,7 +22,7 @@ function createStudioConfig(deps = {}) {
 
   let memKey = ""; // session-only fallback when encryption is unavailable
 
-  function saveConfig({ baseUrl, model, apiKey } = {}) {
+  function saveConfig({ baseUrl, apiKey } = {}) {
     const url = String(baseUrl || "").trim();
     let parsed;
     try {
@@ -31,7 +33,9 @@ function createStudioConfig(deps = {}) {
     if (parsed.protocol !== "https:") throw new Error("baseUrl must use https");
 
     store.set(KEY_BASEURL, url);
-    store.set(KEY_MODEL, String(model || "").trim());
+    // Remove legacy overrides so every Studio generation uses the model the
+    // prompt and geometry pipeline were validated against.
+    if (typeof store.delete === "function") store.delete(KEY_MODEL);
 
     const key = String(apiKey || "");
     if (!key) {
@@ -51,7 +55,7 @@ function createStudioConfig(deps = {}) {
 
   function loadConfig() {
     const baseUrl = String(store.get(KEY_BASEURL) || "");
-    const model = String(store.get(KEY_MODEL) || "");
+    const model = STUDIO_IMAGE_MODEL;
     let apiKey = "";
     const enc = store.get(KEY_APIKEY_ENC);
     if (enc && safeStorage && safeStorage.isEncryptionAvailable && safeStorage.isEncryptionAvailable()) {
@@ -102,4 +106,4 @@ function createJsonFileStore(filePath, fsModule) {
   };
 }
 
-module.exports = { createStudioConfig, createJsonFileStore };
+module.exports = { createStudioConfig, createJsonFileStore, STUDIO_IMAGE_MODEL };

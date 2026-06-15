@@ -27,6 +27,8 @@ describe("imagegen-client", () => {
       prompt: "hello",
       images: ["data:image/png;base64,AAA", "data:image/png;base64,BBB"],
       size: "1024x1024",
+      quality: "medium",
+      background: "opaque",
     }, { httpPost: okPost(cap) });
 
     assert.strictEqual(source, "data:image/png;base64,UE5H");
@@ -38,6 +40,8 @@ describe("imagegen-client", () => {
     assert.match(body, /name="model"\r\n\r\ngpt-image-2/);
     assert.match(body, /name="prompt"\r\n\r\nhello/);
     assert.match(body, /name="size"\r\n\r\n1024x1024/);
+    assert.match(body, /name="quality"\r\n\r\nmedium/);
+    assert.match(body, /name="background"\r\n\r\nopaque/);
     assert.strictEqual((body.match(/name="image\[\]"/g) || []).length, 2);
     assert.doesNotMatch(body, /response_format/);
   });
@@ -63,6 +67,14 @@ describe("imagegen-client", () => {
     await assert.rejects(
       () => generateImage({ baseUrl: "https://x", apiKey: "k", model: "m", prompt: "p" }, { httpPost }),
       (e) => e.code === "IMAGEGEN_HTTP_ERROR" && /401/.test(e.message),
+    );
+  });
+
+  it("surfaces the provider's error detail in the message", async () => {
+    const httpPost = async () => ({ status: 400, text: '{"error":{"message":"input image too large"}}' });
+    await assert.rejects(
+      () => generateImage({ baseUrl: "https://x", apiKey: "k", model: "m", prompt: "p" }, { httpPost }),
+      (e) => e.code === "IMAGEGEN_HTTP_ERROR" && /400/.test(e.message) && /input image too large/.test(e.message),
     );
   });
 

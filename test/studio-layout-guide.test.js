@@ -3,7 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { computeGuideRects } = require("../src/studio/layout-guide");
+const { computeGuideRects, buildGuidePalette } = require("../src/studio/layout-guide");
 
 describe("computeGuideRects", () => {
   it("produces cols*rows row-major cells with safe areas and centers", () => {
@@ -29,5 +29,21 @@ describe("computeGuideRects", () => {
     assert.strictEqual(rects.length, 3);
     assert.strictEqual(rects[2].cell.x, 800);
     assert.strictEqual(rects[2].center.x, 800 + 200);
+  });
+});
+
+describe("buildGuidePalette", () => {
+  it("keeps every guide mark within the chroma removal radius", () => {
+    const key = [0, 255, 0];
+    const threshold = 100;
+    const palette = buildGuidePalette(key, threshold);
+    for (const [name, color] of Object.entries(palette)) {
+      const distance = Math.hypot(
+        color[0] - key[0],
+        color[1] - key[1],
+        color[2] - key[2],
+      );
+      assert.ok(distance < threshold, `${name} remains removable`);
+    }
   });
 });

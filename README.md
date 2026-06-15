@@ -26,6 +26,26 @@
 
 ## ✨ What's New in Petlaude
 
+### 🎨 AI Pet Studio (Experimental)
+
+Turn one reference image into a complete desktop-pet theme from **Settings → AI Studio**. Configure an OpenAI-compatible image API, choose an image or reuse the active pet, then generate every core, sleep, mini-mode, idle-life, context, and touch animation in one run.
+
+- Generates **6–8 frames per action** with explicit in-between poses for smoother motion
+- Stabilizes body scale, ground line, and per-action anchors to reduce frame drift
+- Removes an adaptive chroma-key background locally and rejects visible residue, guide lines, cropped subjects, and unstable frames
+- Restores per-action previews and completion state from the generated assets, and reuses finished actions when a batch resumes
+- Treats a theme as complete only when its SVG, individual PNG frames, and matching quality metadata are all present
+
+> **Testing notice:** AI Pet Studio is still experimental. Image API calls may consume paid credits, output quality varies by provider, and generated themes should be reviewed before daily use.
+
+### 📡 Official Subscription Limits
+
+The dashboard can now show official Claude Code and Codex subscription windows, including 5-hour and 7-day usage percentages and reset times. Live provider data is labeled **Official**, stored fallback data is labeled **Cached**, and the local activity-based estimate remains available when no current official window exists.
+
+### 🛡️ Smarter Codex Approval Routing
+
+When Codex Auto-review or another non-user approval mode owns the decision, Petlaude now stays out of the way instead of showing a redundant permission bubble. Normal user-intercept approval flows continue to use the desktop bubble.
+
 ### 💎 Subscription Value Dashboard
 
 Stop thinking of your AI subscription as a spending limit — it's a multiplier. The redesigned quota cards show you the **API-equivalent value** you've consumed this month, not how much "budget" you have left.

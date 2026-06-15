@@ -137,6 +137,26 @@ describe("settingsNeedClaudeHookResync", () => {
     assert.strictEqual(settingsNeedClaudeHookResync(wrongPermissionPort, expectedUrl), true);
     assert.strictEqual(settingsNeedClaudeHookResync('{"hooks":{}}', expectedUrl), true);
   });
+
+  it("can require the managed statusLine relay in addition to hooks", () => {
+    const expectedUrl = "http://127.0.0.1:23333/permission";
+    const hooks = {
+      Stop: [{ matcher: "", hooks: [{ type: "command", command: "node clawd-hook.js Stop" }] }],
+      PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: expectedUrl }] }],
+    };
+    const intact = JSON.stringify({
+      statusLine: { type: "command", command: "node claude-statusline.js" },
+      hooks,
+    });
+    const missingRelay = JSON.stringify({ hooks });
+
+    assert.strictEqual(settingsNeedClaudeHookResync(intact, expectedUrl, {
+      requireStatusLineRelay: true,
+    }), false);
+    assert.strictEqual(settingsNeedClaudeHookResync(missingRelay, expectedUrl, {
+      requireStatusLineRelay: true,
+    }), true);
+  });
 });
 
 describe("createClaudeSettingsWatcher", () => {

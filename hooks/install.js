@@ -8,7 +8,13 @@ const path = require("path");
 const os = require("os");
 const childProcess = require("child_process");
 const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, REMOTE_HOOK_HTTP_TIMEOUT_MS, resolveNodeBin, resolveNodeBinAsync, SERVER_PORTS } = require("./server-config");
-const { writeJsonAtomic, writeJsonAtomicAsync, asarUnpackedPath, extractExistingNodeBin } = require("./json-utils");
+const {
+  writeJsonAtomic,
+  writeJsonAtomicAsync,
+  asarUnpackedPath,
+  extractExistingNodeBin,
+  formatNodeHookCommand,
+} = require("./json-utils");
 
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".claude");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
@@ -433,6 +439,8 @@ async function getClaudeVersionAsync(options = {}) {
 const MARKER = "clawd-hook.js";
 const AUTO_START_MARKER = "auto-start.js";
 const LEGACY_AUTO_START_MARKER = "auto-start.sh";
+const STATUSLINE_MARKER = "claude-statusline.js";
+const STATUSLINE_STATE_NAME = "clawd-statusline.json";
 const HTTP_MARKER = PERMISSION_PATH;
 const STATE_HOOK_TIMEOUT_SECONDS = 5;
 const REMOTE_STATE_HOOK_TIMEOUT_SECONDS = Math.ceil(REMOTE_HOOK_HTTP_TIMEOUT_MS / 1000) + 5;
@@ -474,6 +482,104 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
     type: "command",
     command: quotedCommand,
   });
+}
+
+function getStatusLineStatePath(settingsPath, options = {}) {
+  return options.statusLineStatePath || path.join(path.dirname(settingsPath), STATUSLINE_STATE_NAME);
+}
+
+function isManagedStatusLine(statusLine) {
+  return !!statusLine
+    && typeof statusLine === "object"
+    && typeof statusLine.command === "string"
+    && statusLine.command.includes(STATUSLINE_MARKER);
+}
+
+function readStatusLineState(filePath) {
+  try {
+    const state = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return state && state.version === 1 ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readStatusLineStateAsync(filePath) {
+  try {
+    const state = JSON.parse(await fs.promises.readFile(filePath, "utf8"));
+    return state && state.version === 1 ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildManagedStatusLineCommand(nodeBin, options = {}) {
+  const scriptPath = options.statusLineScript || asarUnpackedPath(
+    path.resolve(__dirname, STATUSLINE_MARKER).replace(/\\/g, "/")
+  );
+  return formatNodeHookCommand(nodeBin, scriptPath, {
+    platform: options.platform || process.platform,
+    windowsWrapper: "powershell",
+  });
+}
+
+function prepareStatusLineSync(settings, settingsPath, nodeBin, options = {}) {
+  const statePath = getStatusLineStatePath(settingsPath, options);
+  const current = settings.statusLine;
+  const managed = isManagedStatusLine(current);
+  const command = buildManagedStatusLineCommand(nodeBin, options);
+  let state = readStatusLineState(statePath);
+  let writeState = false;
+
+  if (!managed) {
+    const hadStatusLine = Object.prototype.hasOwnProperty.call(settings, "statusLine");
+    state = {
+      version: 1,
+      hadStatusLine,
+      original: hadStatusLine ? JSON.parse(JSON.stringify(current)) : null,
+    };
+    writeState = true;
+  } else if (!state) {
+    state = { version: 1, hadStatusLine: false, original: null };
+    writeState = true;
+  }
+
+  const next = current && typeof current === "object" && !Array.isArray(current)
+    ? { ...current }
+    : {};
+  next.type = "command";
+  next.command = command;
+  const changed = !managed || current.type !== next.type || current.command !== next.command;
+  if (changed) settings.statusLine = next;
+  return { changed, statePath, state, writeState };
+}
+
+function restoreStatusLine(settings, settingsPath, options = {}) {
+  const statePath = getStatusLineStatePath(settingsPath, options);
+  const managed = isManagedStatusLine(settings.statusLine);
+  const state = readStatusLineState(statePath);
+  let changed = false;
+  if (managed) {
+    if (state && state.hadStatusLine) settings.statusLine = state.original;
+    else delete settings.statusLine;
+    changed = true;
+  }
+  try { fs.unlinkSync(statePath); } catch {}
+  return changed;
+}
+
+async function restoreStatusLineAsync(settings, settingsPath, options = {}) {
+  const statePath = getStatusLineStatePath(settingsPath, options);
+  const managed = isManagedStatusLine(settings.statusLine);
+  const state = await readStatusLineStateAsync(statePath);
+  let changed = false;
+  if (managed) {
+    if (state && state.hadStatusLine) settings.statusLine = state.original;
+    else delete settings.statusLine;
+    changed = true;
+  }
+  try { await fs.promises.unlink(statePath); } catch {}
+  return changed;
 }
 
 function forEachCommandHook(entries, visitor) {
@@ -938,6 +1044,15 @@ function registerHooks(options = {}) {
     added++;
   }
 
+  const statusLineSync = prepareStatusLineSync(settings, settingsPath, nodeBin, {
+    ...options,
+    platform,
+  });
+  if (statusLineSync.writeState) {
+    writeJsonAtomic(statusLineSync.statePath, statusLineSync.state);
+  }
+  if (statusLineSync.changed) changed = true;
+
   // Only write if something changed (avoid unnecessary disk I/O)
   if (added > 0 || changed) {
     writeJsonAtomic(settingsPath, settings);
@@ -1146,6 +1261,15 @@ async function registerHooksAsync(options = {}) {
     added++;
   }
 
+  const statusLineSync = prepareStatusLineSync(settings, settingsPath, nodeBin, {
+    ...options,
+    platform,
+  });
+  if (statusLineSync.writeState) {
+    await writeJsonAtomicAsync(statusLineSync.statePath, statusLineSync.state);
+  }
+  if (statusLineSync.changed) changed = true;
+
   if (added > 0 || changed) {
     await writeJsonAtomicAsync(settingsPath, settings);
   }
@@ -1196,13 +1320,10 @@ function unregisterHooks(options = {}) {
     throw new Error(`Failed to read settings.json: ${err.message}`);
   }
 
-  if (!settings.hooks || typeof settings.hooks !== "object") {
-    return { removed: 0, changed: false };
-  }
-
   let removed = 0;
   let changed = false;
-  for (const [event, entries] of Object.entries(settings.hooks)) {
+  const hooks = settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
+  for (const [event, entries] of Object.entries(hooks)) {
     if (!Array.isArray(entries)) continue;
 
     const commandResult = removeMatchingCommandHooks(
@@ -1222,6 +1343,11 @@ function unregisterHooks(options = {}) {
     changed = true;
     if (httpResult.entries.length > 0) settings.hooks[event] = httpResult.entries;
     else delete settings.hooks[event];
+  }
+
+  if (restoreStatusLine(settings, settingsPath, options)) {
+    removed++;
+    changed = true;
   }
 
   if (changed) {
@@ -1241,13 +1367,10 @@ async function unregisterHooksAsync(options = {}) {
     throw new Error(`Failed to read settings.json: ${err.message}`);
   }
 
-  if (!settings.hooks || typeof settings.hooks !== "object") {
-    return { removed: 0, changed: false };
-  }
-
   let removed = 0;
   let changed = false;
-  for (const [event, entries] of Object.entries(settings.hooks)) {
+  const hooks = settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
+  for (const [event, entries] of Object.entries(hooks)) {
     if (!Array.isArray(entries)) continue;
 
     const commandResult = removeMatchingCommandHooks(
@@ -1267,6 +1390,11 @@ async function unregisterHooksAsync(options = {}) {
     changed = true;
     if (httpResult.entries.length > 0) settings.hooks[event] = httpResult.entries;
     else delete settings.hooks[event];
+  }
+
+  if (await restoreStatusLineAsync(settings, settingsPath, options)) {
+    removed++;
+    changed = true;
   }
 
   if (changed) {

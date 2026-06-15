@@ -132,6 +132,78 @@ describe("ensurePetTheme", () => {
     assert.deepStrictEqual(repaired.states.thinking, ["reference.png"]);
   });
 
+  it("preserves the full sleep sequence across re-entry once all four states exist", () => {
+    const userThemesDir = tmpDir();
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "Sleepy", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    theme.states.yawning = ["yawning.svg"];
+    theme.states.dozing = ["dozing.svg"];
+    theme.states.collapsing = ["collapsing.svg"];
+    theme.states.waking = ["waking.svg"];
+    theme.sleepSequence = { mode: "full" };
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "Sleepy", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.deepStrictEqual(repaired.states.waking, ["waking.svg"]);
+    assert.strictEqual(repaired.sleepSequence.mode, "full", "full wind-down survives re-entry");
+  });
+
+  it("keeps sleepSequence direct when the transitional set is incomplete", () => {
+    const userThemesDir = tmpDir();
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "HalfSleepy", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    theme.states.yawning = ["yawning.svg"]; // only one of four
+    theme.sleepSequence = { mode: "full" };  // stale/over-eager flag
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "HalfSleepy", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.strictEqual(repaired.sleepSequence.mode, "direct", "incomplete set falls back to direct (stays valid)");
+  });
+
+  it("preserves generated mini peek states and recomputes supported across re-entry", () => {
+    const userDataDir = tmpDir();
+    const userThemesDir = path.join(userDataDir, "themes");
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "Peeker", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    const required = [
+      "mini-idle", "mini-enter", "mini-enter-sleep", "mini-crabwalk",
+      "mini-peek", "mini-alert", "mini-happy", "mini-sleep",
+    ];
+    theme.miniMode = { supported: true, flipAssets: true, offsetRatio: 0.4, states: {} };
+    for (const s of required) theme.miniMode.states[s] = [`${s}.svg`];
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "Peeker", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.strictEqual(repaired.miniMode.supported, true, "complete mini set stays supported");
+    assert.strictEqual(repaired.miniMode.flipAssets, true);
+    assert.deepStrictEqual(repaired.miniMode.states["mini-peek"], ["mini-peek.svg"]);
+  });
+
+  it("leaves mini support off when only some peek states were generated", () => {
+    const userDataDir = tmpDir();
+    const userThemesDir = path.join(userDataDir, "themes");
+    const referencePath = tmpReference();
+    const first = ensurePetTheme({ name: "HalfPeeker", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const themePath = path.join(first.themeDir, "theme.json");
+    const theme = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    theme.miniMode = { supported: true, flipAssets: true, offsetRatio: 0.4, states: { "mini-idle": ["mini-idle.svg"] } };
+    fs.writeFileSync(themePath, JSON.stringify(theme));
+
+    ensurePetTheme({ name: "HalfPeeker", referencePath, userThemesDir, templateDir: TEMPLATE_DIR });
+    const repaired = JSON.parse(fs.readFileSync(themePath, "utf8"));
+    assert.strictEqual(repaired.miniMode.supported, false, "partial mini set → dormant, not invalid");
+    assert.deepStrictEqual(repaired.miniMode.states["mini-idle"], ["mini-idle.svg"]);
+  });
+
   it("drops old template reaction placeholders while preserving generated touch reactions", () => {
     const userThemesDir = tmpDir();
     const referencePath = tmpReference();

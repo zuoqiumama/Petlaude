@@ -3,10 +3,11 @@
 const { describe, it, beforeEach } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 
-const { createStudioRuntime } = require("../src/studio/studio-runtime");
+const { createStudioRuntime, pickGenerationSize } = require("../src/studio/studio-runtime");
 const { ensurePetTheme } = require("../src/studio/pet-theme");
 const { getAction } = require("../src/companion/action-manifest");
 const themeLoader = require("../src/theme-loader");
@@ -32,7 +33,7 @@ function fakeFrames(n) {
   return frames;
 }
 
-function makeHarness({ failClient = false, failActions = [] } = {}) {
+function makeHarness({ failClient = false, failActions = [], failAttempts = {} } = {}) {
   const userDataDir = tmpDir();
   const userThemesDir = path.join(userDataDir, "themes");
   const refPath = writeRef(tmpDir());
@@ -40,20 +41,26 @@ function makeHarness({ failClient = false, failActions = [] } = {}) {
     name: "Test Pet", referencePath: refPath, userThemesDir, templateDir: TEMPLATE_DIR,
   });
 
-  const calls = { client: [], guides: [], strips: [], downloads: [] };
+  const calls = { client: [], guides: [], strips: [], downloads: [], attempts: new Map() };
   const progress = [];
 
   const runtime = createStudioRuntime({
     themeDir,
     referencePath: refPath,
-    config: { baseUrl: "https://api.example.com", apiKey: "sk-test", model: "gpt-image-2" },
+    config: { baseUrl: "https://api.example.com", apiKey: "sk-test", model: "legacy-model-must-be-ignored" },
     deps: {
       generateImage: async (params) => {
         calls.client.push(params);
         const actionId = params._actionId || "?";
-        if (failClient || failActions.includes(actionId)) {
-          const e = new Error("boom");
-          e.code = "IMAGEGEN_HTTP_ERROR";
+        const attempt = (calls.attempts.get(actionId) || 0) + 1;
+        calls.attempts.set(actionId, attempt);
+        // A transient failure (failAttempts) recovers on a later attempt, so it
+        // must look like a retryable transport error. A permanent failure
+        // (failClient/failActions) is a billed, non-retryable provider error.
+        const transient = attempt <= Number(failAttempts[actionId] || 0);
+        if (failClient || failActions.includes(actionId) || transient) {
+          const e = new Error(transient ? "temporary network blip" : "boom");
+          e.code = transient ? "IMAGEGEN_NETWORK" : "IMAGEGEN_HTTP_ERROR";
           throw e;
         }
         return "https://img.example/strip.png";
@@ -62,6 +69,7 @@ function makeHarness({ failClient = false, failActions = [] } = {}) {
         calls.downloads.push(url);
         return Buffer.from("fake-png-bytes");
       },
+      sleep: async () => {}, // keep retry backoff instant in tests
       processor: {
         makeGuide: async (payload) => {
           calls.guides.push(payload);
@@ -98,26 +106,51 @@ describe("studio-runtime generateAction", () => {
 
     // guide built with the manifest grid
     assert.strictEqual(h.calls.guides.length, 1);
-    assert.strictEqual(h.calls.guides[0].cols, 2);
+    assert.strictEqual(h.calls.guides[0].cols, 4);
     assert.strictEqual(h.calls.guides[0].rows, 2);
 
     // client got the prompt + [reference, guide]
     assert.strictEqual(h.calls.client.length, 1);
     const params = h.calls.client[0];
-    assert.match(params.prompt, /2x2/);
+    assert.match(params.prompt, /4x2/);
     assert.strictEqual(params.images.length, 2);
     assert.ok(params.images[0].startsWith("data:image/png;base64,"), "reference data url");
     assert.strictEqual(params.images[1], "data:image/png;base64,GUIDE");
+    assert.strictEqual(params.model, "gpt-image-2");
+    assert.strictEqual(params.quality, "medium");
+    assert.strictEqual(params.background, "opaque");
+    assert.strictEqual(h.calls.strips[0].stabilize, true);
+    assert.strictEqual(h.calls.strips[0].anchor.lockX, true);
+    assert.strictEqual(h.calls.strips[0].anchor.lockY, true);
+    assert.strictEqual(h.calls.strips[0].anchor.targetX, 256);
+    assert.strictEqual(h.calls.strips[0].anchor.targetY, 479);
+    assert.deepStrictEqual(h.calls.strips[0].anchor.safeBox, {
+      x: 32,
+      y: 24,
+      width: 448,
+      height: 456,
+    });
 
     // svg written with the frames
     const svgPath = path.join(h.themeDir, "assets", "yawn.svg");
     assert.ok(fs.existsSync(svgPath), "svg asset written");
     const svg = fs.readFileSync(svgPath, "utf8");
     assert.match(svg, /href="yawn-frame-1\.png"/);
-    assert.match(svg, /href="yawn-frame-4\.png"/);
+    assert.match(svg, /href="yawn-frame-8\.png"/);
+    assert.doesNotMatch(svg, /@keyframes bob/, "generated pets must not float as a whole");
     assert.doesNotMatch(svg, /data:image/, "external-theme sanitizer strips data URLs");
     assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn-frame-1.png")));
-    assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn-frame-4.png")));
+    assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn-frame-8.png")));
+    const quality = JSON.parse(fs.readFileSync(
+      path.join(h.themeDir, "assets", "yawn.studio.json"),
+      "utf8",
+    ));
+    const canonicalReference = fs.readFileSync(path.join(h.themeDir, "assets", "reference.png"));
+    assert.strictEqual(
+      quality.referenceSha256,
+      crypto.createHash("sha256").update(canonicalReference).digest("hex"),
+      "completion marker must be bound to the copied canonical reference",
+    );
 
     themeLoader.init(path.join(__dirname, "..", "src"), h.userDataDir);
     const loaded = themeLoader.loadTheme(h.themeId, { strict: true });
@@ -209,6 +242,157 @@ describe("studio-runtime generateAction", () => {
     assert.strictEqual(fs.readFileSync(path.join(bad.themeDir, "theme.json"), "utf8"), before, "theme.json untouched");
   });
 
+  it("retries a transient generation failure and writes only the successful attempt", async () => {
+    const retrying = makeHarness({ failAttempts: { yawn: 1 } });
+
+    const result = await retrying.runtime.generateAction("yawn");
+
+    assert.strictEqual(result.actionId, "yawn");
+    assert.strictEqual(retrying.calls.attempts.get("yawn"), 2);
+    assert.strictEqual(retrying.calls.strips.length, 1, "failed API attempt never reaches extraction");
+    assert.ok(fs.existsSync(path.join(retrying.themeDir, "assets", "yawn.svg")));
+    const starts = retrying.progress.filter((event) => event.actionId === "yawn" && event.stage === "start");
+    assert.deepStrictEqual(starts.map((event) => event.attempt), [1, 2]);
+  });
+
+  it("does not retry permanent authentication errors", async () => {
+    const bad = makeHarness();
+    let attempts = 0;
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async () => {
+          attempts += 1;
+          const error = new Error("image generation failed (HTTP 401)");
+          error.code = "IMAGEGEN_HTTP_ERROR";
+          throw error;
+        },
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async () => ({ frames: [], report: [] }),
+        },
+      },
+    });
+
+    await assert.rejects(() => runtime.generateAction("yawn"), /HTTP 401/);
+    assert.strictEqual(attempts, 1);
+  });
+
+  it("retries a transient 'excessive system load' 400 (provider-mislabeled, unbilled) and recovers", async () => {
+    const bad = makeHarness();
+    let attempts = 0;
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        sleep: async () => {},
+        generateImage: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            const e = new Error("image generation failed (HTTP 400): excessive system load");
+            e.code = "IMAGEGEN_HTTP_ERROR";
+            throw e;
+          }
+          return "https://img/s.png";
+        },
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => ({
+            frames: fakeFrames(p.cols * p.rows),
+            report: Array.from({ length: p.cols * p.rows }, () => ({ rawW: 100, rawH: 100, opaquePct: 20 })),
+          }),
+        },
+      },
+    });
+    const result = await runtime.generateAction("yawn");
+    assert.strictEqual(result.actionId, "yawn");
+    assert.strictEqual(attempts, 2, "transient overload is retried even though it arrives as a 400");
+  });
+
+  it("does not retry a non-transient 400 such as moderation", async () => {
+    const bad = makeHarness();
+    let attempts = 0;
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        sleep: async () => {},
+        generateImage: async () => {
+          attempts += 1;
+          const e = new Error("image generation failed (HTTP 400): moderation_blocked");
+          e.code = "IMAGEGEN_HTTP_ERROR";
+          throw e;
+        },
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async () => ({ frames: [], report: [] }),
+        },
+      },
+    });
+    await assert.rejects(() => runtime.generateAction("yawn"), /moderation_blocked/);
+    assert.strictEqual(attempts, 1, "a real 400 must not be retried");
+  });
+
+  it("does not re-call the paid API when a quality check rejects the image", async () => {
+    const bad = makeHarness();
+    let apiCalls = 0;
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async () => { apiCalls += 1; return "https://img/s.png"; },
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (p) => ({
+            frames: fakeFrames(p.cols * p.rows),
+            report: Array.from({ length: p.cols * p.rows }, () => ({
+              rawW: 100, rawH: 100, opaquePct: 20, backgroundResidualPct: 50,
+            })),
+          }),
+        },
+      },
+    });
+    await assert.rejects(() => runtime.generateAction("yawn"), /quality/i);
+    assert.strictEqual(apiCalls, 1, "a billed image that fails validation must not be paid for again");
+  });
+
+  it("rejects copied guide lines and never writes a failed-quality animation", async () => {
+    const bad = makeHarness();
+    const runtime = createStudioRuntime({
+      themeDir: bad.themeDir,
+      referencePath: bad.refPath,
+      config: { baseUrl: "https://x", apiKey: "k", model: "m" },
+      deps: {
+        generateImage: async () => "https://img/s.png",
+        downloadImage: async () => Buffer.from("png"),
+        processor: {
+          makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
+          processStrip: async (payload) => ({
+            frames: fakeFrames(payload.cols * payload.rows),
+            report: Array.from({ length: payload.cols * payload.rows }, () => ({
+              rawW: 100,
+              rawH: 100,
+              opaquePct: 20,
+              lineArtifact: true,
+              edgeTouchPct: 0,
+              discardedPct: 0,
+            })),
+          }),
+        },
+      },
+    });
+
+    await assert.rejects(() => runtime.generateAction("yawn"), /guide line|quality/i);
+    assert.ok(!fs.existsSync(path.join(bad.themeDir, "assets", "yawn.svg")));
+  });
+
   it("rejects unknown action ids", async () => {
     await assert.rejects(() => h.runtime.generateAction("nope"), /unknown action/);
   });
@@ -266,9 +450,17 @@ describe("studio-runtime generateAction", () => {
 });
 
 describe("studio-runtime reference + guide geometry", () => {
+  it("uses provider-compatible image sizes while preserving the action grid", () => {
+    assert.strictEqual(pickGenerationSize({ cols: 4, rows: 2 }), "1536x1024");
+    assert.strictEqual(pickGenerationSize({ cols: 3, rows: 2 }), "1536x1024");
+    assert.strictEqual(pickGenerationSize({ cols: 2, rows: 2 }), "1024x1024");
+    assert.strictEqual(pickGenerationSize({ cols: 2, rows: 4 }), "1024x1536");
+  });
+
   it("uses processor.prepareReference (downscaled) when available", async () => {
     const h = makeHarness(); // base harness lacks prepareReference — build a runtime that has it
     const prepared = [];
+    const prepareArgs = [];
     const { createStudioRuntime } = require("../src/studio/studio-runtime");
     const runtime = createStudioRuntime({
       themeDir: h.themeDir,
@@ -278,7 +470,10 @@ describe("studio-runtime reference + guide geometry", () => {
         generateImage: async (params) => { prepared.push(params.images[0]); return "https://img/s.png"; },
         downloadImage: async () => Buffer.from("png"),
         processor: {
-          prepareReference: async () => ({ dataUrl: "data:image/png;base64,SMALLREF" }),
+          prepareReference: async (payload) => {
+            prepareArgs.push(payload);
+            return { dataUrl: "data:image/png;base64,SMALLREF" };
+          },
           makeGuide: async () => ({ dataUrl: "data:image/png;base64,G" }),
           processStrip: async (p) => ({
             frames: fakeFrames(p.cols * p.rows),
@@ -289,16 +484,24 @@ describe("studio-runtime reference + guide geometry", () => {
     });
     await runtime.generateAction("yawn");
     assert.strictEqual(prepared[0], "data:image/png;base64,SMALLREF");
+    assert.strictEqual(prepareArgs[0].maxSize, 1024, "keeps enough reference detail for identity-sensitive edits");
   });
 
-  it("uses a square 2x2 guide for three-frame actions", async () => {
+  it("keeps six-frame action guide cells square", async () => {
+    const h = makeHarness();
+    await h.runtime.generateAction("bye-wave");
+    assert.strictEqual(h.calls.client[0].size, "1536x1024");
+    assert.strictEqual(h.calls.guides[0].cellW, h.calls.guides[0].cellH);
+  });
+
+  it("uses a 3x2 guide for actions expanded from three key poses", async () => {
     const h = makeHarness();
     await h.runtime.generateAction("curious");
     const guide = h.calls.guides[0];
     assert.strictEqual(guide.cellW, 512);
     assert.strictEqual(guide.cellH, 512);
     const params = h.calls.client[0];
-    assert.strictEqual(params.size, "1024x1024");
+    assert.strictEqual(params.size, "1536x1024");
   });
 
   it("uses the reference-aware chroma choice for both prompting and extraction", async () => {
@@ -332,14 +535,104 @@ describe("studio-runtime reference + guide geometry", () => {
   });
 });
 
+describe("studio-runtime sleep sequence", () => {
+  let h;
+  beforeEach(() => { h = makeHarness(); });
+
+  it("binds each transitional state and only flips to full once all four exist", async () => {
+    await h.runtime.generateAction("yawning");
+    let theme = readTheme(h.themeDir);
+    assert.deepStrictEqual(theme.states.yawning, ["yawning.svg"]);
+    assert.strictEqual(theme.sleepSequence.mode, "direct", "partial sleep set stays direct (valid)");
+
+    await h.runtime.generateAction("dozing");
+    await h.runtime.generateAction("collapsing");
+    theme = readTheme(h.themeDir);
+    assert.strictEqual(theme.sleepSequence.mode, "direct", "still missing waking");
+
+    await h.runtime.generateAction("waking");
+    theme = readTheme(h.themeDir);
+    assert.strictEqual(theme.sleepSequence.mode, "full", "all four present → full wind-down");
+    assert.deepStrictEqual(theme.states.collapsing, ["collapsing.svg"]);
+    assert.deepStrictEqual(theme.states.waking, ["waking.svg"]);
+
+    themeLoader.init(path.join(__dirname, "..", "src"), h.userDataDir);
+    const validation = themeLoader.validateThemeShape(h.themeId);
+    assert.deepStrictEqual(validation.errors, [], "full sleep theme is schema-valid");
+  });
+});
+
+describe("studio-runtime mini mode", () => {
+  let h;
+  beforeEach(() => { h = makeHarness(); });
+
+  const REQUIRED_MINI = [
+    "mini-idle", "mini-enter", "mini-enter-sleep", "mini-crabwalk",
+    "mini-peek", "mini-alert", "mini-happy", "mini-sleep",
+  ];
+
+  it("accumulates peek states and only turns supported on when the required set is complete", async () => {
+    await h.runtime.generateAction("mini-idle");
+    let theme = readTheme(h.themeDir);
+    assert.deepStrictEqual(theme.miniMode.states["mini-idle"], ["mini-idle.svg"]);
+    assert.strictEqual(theme.miniMode.supported, false, "one state is not enough");
+    assert.strictEqual(theme.miniMode.flipAssets, true, "generated mini mirrors for the other edge");
+    assert.strictEqual(theme.miniMode.offsetRatio, 0.4);
+
+    for (const id of REQUIRED_MINI) {
+      if (id !== "mini-idle") await h.runtime.generateAction(id);
+    }
+    theme = readTheme(h.themeDir);
+    assert.strictEqual(theme.miniMode.supported, true, "full required set → mini mode on");
+
+    themeLoader.init(path.join(__dirname, "..", "src"), h.userDataDir);
+    const validation = themeLoader.validateThemeShape(h.themeId);
+    assert.deepStrictEqual(validation.errors, [], "mini-supported theme is schema-valid");
+  });
+
+  it("keeps the optional mini-working slot without requiring it for support", async () => {
+    for (const id of REQUIRED_MINI) await h.runtime.generateAction(id);
+    await h.runtime.generateAction("mini-working");
+    const theme = readTheme(h.themeDir);
+    assert.strictEqual(theme.miniMode.supported, true);
+    assert.deepStrictEqual(theme.miniMode.states["mini-working"], ["mini-working.svg"]);
+  });
+});
+
 describe("studio-runtime generateAll", () => {
   it("continues past failures and returns a summary", async () => {
     const h = makeHarness({ failActions: ["snack", "dizzy"] });
     const summary = await h.runtime.generateAll();
     assert.strictEqual(summary.total, summary.ok + summary.failed.length);
     assert.deepStrictEqual(summary.failed.map((f) => f.actionId).sort(), ["dizzy", "snack"]);
+    assert.strictEqual(summary.results.length, summary.ok);
+    assert.ok(summary.results.every((result) => result.actionId && result.assetFile));
     // succeeded ones actually wrote assets
     assert.ok(fs.existsSync(path.join(h.themeDir, "assets", "yawn.svg")));
     assert.ok(!fs.existsSync(path.join(h.themeDir, "assets", "snack.svg")));
+  });
+
+  it("aborts the batch early instead of paying for every action when generation keeps failing", async () => {
+    const h = makeHarness({ failClient: true });
+    const summary = await h.runtime.generateAll();
+    assert.strictEqual(summary.aborted, true);
+    assert.strictEqual(summary.failed.length, 3, "stops after the abort streak, not all 33 actions");
+    assert.strictEqual(h.calls.client.length, 3, "no further paid API calls after aborting");
+    assert.strictEqual(summary.remaining.length, summary.total - summary.failed.length);
+    assert.ok(summary.remaining.every((actionId) => typeof actionId === "string" && actionId));
+  });
+
+  it("reuses already complete actions instead of spending another image request", async () => {
+    const h = makeHarness();
+    await h.runtime.generateAction("yawn");
+    const before = h.calls.client.length;
+
+    const summary = await h.runtime.generateAll();
+    const generatedAfter = h.calls.client.slice(before).map((call) => call._actionId);
+    const yawn = summary.results.find((result) => result.actionId === "yawn");
+
+    assert.ok(yawn && yawn.reused, "complete action is represented in the summary");
+    assert.ok(!generatedAfter.includes("yawn"), "complete action is not regenerated");
+    assert.strictEqual(summary.ok, summary.total);
   });
 });

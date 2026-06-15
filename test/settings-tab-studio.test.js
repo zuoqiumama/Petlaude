@@ -43,6 +43,11 @@ function queryDeep(root, sel, all, out) {
   return all ? out : null;
 }
 
+function setConnected(el, connected) {
+  el.isConnected = connected;
+  for (const child of el.children) setConnected(child, connected);
+}
+
 function makeEl(tag) {
   const el = {
     tagName: String(tag || "div").toUpperCase(),
@@ -60,12 +65,14 @@ function makeEl(tag) {
     src: "",
     alt: "",
     disabled: false,
-    isConnected: true,
+    isConnected: false,
     dataset: {},
     style: {},
+    attributes: {},
     appendChild(child) {
       child.parentNode = el;
       el.children.push(child);
+      if (el.isConnected) setConnected(child, true);
       return child;
     },
     removeChild(child) {
@@ -79,6 +86,13 @@ function makeEl(tag) {
     },
     addEventListener(type, fn) {
       (el._handlers[type] = el._handlers[type] || []).push(fn);
+    },
+    setAttribute(name, value) {
+      el.attributes[name] = String(value);
+      if (name === "class") el.className = value;
+    },
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(el.attributes, name) ? el.attributes[name] : null;
     },
     dispatch(type, ev) {
       for (const fn of el._handlers[type] || []) fn(ev || {});
@@ -101,6 +115,12 @@ function makeEl(tag) {
   return el;
 }
 
+function makeRoot() {
+  const el = makeEl("div");
+  el.isConnected = true;
+  return el;
+}
+
 const MODULE_PATH = path.join(__dirname, "..", "src", "settings-tab-studio.js");
 
 function loadStudioTab() {
@@ -111,7 +131,14 @@ function loadStudioTab() {
 }
 
 const FAKE_ACTIONS = [
-  { id: "yawn", category: "idle-life", frames: 6, durationMs: 1200 },
+  {
+    id: "yawn",
+    category: "idle-life",
+    frames: 6,
+    durationMs: 1200,
+    previewSequence: [0, 1],
+    previewKeyTimes: [0, 0.5, 1],
+  },
   { id: "smooth-thumbsup", category: "context", frames: 8, durationMs: 1600 },
 ];
 
@@ -125,7 +152,10 @@ function findByText(root, tag, text) {
 
 describe("settings-tab-studio render stability", () => {
   beforeEach(() => {
-    globalThis.document = { createElement: makeEl };
+    globalThis.document = {
+      createElement: makeEl,
+      createElementNS: (_namespace, tag) => makeEl(tag),
+    };
   });
   afterEach(() => {
     delete globalThis.window;
@@ -153,7 +183,7 @@ describe("settings-tab-studio render stability", () => {
       },
     };
 
-    const parent = makeEl("div");
+    const parent = makeRoot();
     const MAX_RENDERS = 20;
     let renderCount = 0;
     let looped = false;
@@ -188,6 +218,128 @@ describe("settings-tab-studio render stability", () => {
     assert.strictEqual(cards.length, FAKE_ACTIONS.length, "action cards should render once actions load");
   });
 
+  it("fills the form with saved config after the async config load", async () => {
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({
+          baseUrl: "https://api.example.com/v1",
+          model: "gpt-image-2",
+          hasKey: true,
+        }),
+        getActions: async () => FAKE_ACTIONS,
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+
+    const inputs = parent.querySelectorAll("input");
+    assert.strictEqual(inputs[0].value, "https://api.example.com/v1");
+    assert.strictEqual(inputs[1].value, "gpt-image-2");
+    assert.strictEqual(inputs[1].disabled, true, "Studio model is fixed, not user-editable");
+  });
+
+  it("tests the current form values instead of silently using saved config", async () => {
+    const testCalls = [];
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://saved.example.com", model: "saved-model", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        testConfig: async (cfg) => {
+          testCalls.push(cfg);
+          return { status: "ok" };
+        },
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+
+    const inputs = parent.querySelectorAll("input");
+    inputs[0].value = "https://draft.example.com/v1";
+    inputs[0].dispatch("input");
+    inputs[2].value = "sk-draft";
+    inputs[2].dispatch("input");
+    findByText(parent, "button", "studioTest").dispatch("click");
+    await tick(10);
+
+    assert.deepStrictEqual(testCalls, [{
+      baseUrl: "https://draft.example.com/v1",
+      model: "gpt-image-2",
+      apiKey: "sk-draft",
+    }]);
+  });
+
+  it("clears a stale connection result when the form changes", async () => {
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        testConfig: async () => ({ status: "ok" }),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioTest").dispatch("click");
+    await tick(10);
+    assert.ok(findByText(parent, "span", "studioTestOk"));
+
+    const urlInput = parent.querySelectorAll("input")[0];
+    urlInput.value = "";
+    urlInput.dispatch("input");
+
+    assert.strictEqual(findByText(parent, "span", "studioTestOk"), null);
+  });
+
   it("refreshes saved config so generation becomes available without reopening Settings", async () => {
     let getConfigCalls = 0;
     globalThis.window = {
@@ -205,7 +357,7 @@ describe("settings-tab-studio render stability", () => {
       },
     };
 
-    const parent = makeEl("div");
+    const parent = makeRoot();
     const core = {
       helpers: { t: (k) => k },
       ops: {
@@ -236,6 +388,361 @@ describe("settings-tab-studio render stability", () => {
     assert.strictEqual(generate.disabled, false);
   });
 
+  it("shows a spinner and generating label only on the action currently being generated", async () => {
+    let finishGeneration;
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        pickReference: async () => ({ status: "ok", path: "C:/pet.png", dataUrl: "data:image/png;base64,AA==" }),
+        generate: () => new Promise((resolve) => { finishGeneration = resolve; }),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+
+    parent.querySelectorAll(".studio-action-btn")[0].dispatch("click");
+    await tick(0);
+
+    let buttons = parent.querySelectorAll(".studio-action-btn");
+    assert.strictEqual(buttons[0].textContent, "studioGenerating");
+    assert.strictEqual(buttons[0].disabled, true);
+    assert.ok(buttons[0].classList.contains("studio-action-btn-loading"));
+    assert.ok(buttons[0].querySelector(".studio-btn-spinner"));
+    assert.strictEqual(buttons[1].textContent, "studioGenerate");
+    assert.strictEqual(buttons[1].querySelector(".studio-btn-spinner"), null);
+
+    finishGeneration({ status: "ok" });
+    await tick(10);
+
+    buttons = parent.querySelectorAll(".studio-action-btn");
+    assert.strictEqual(buttons[0].textContent, "studioGenerate");
+    assert.strictEqual(buttons[0].querySelector(".studio-btn-spinner"), null);
+  });
+
+  it("shows the generated action preview and clears the loading label on written progress", async () => {
+    let finishGeneration;
+    let onProgress;
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        pickReference: async () => ({ status: "ok", path: "C:/pet.png", dataUrl: "data:image/png;base64,AA==" }),
+        generate: () => new Promise((resolve) => { finishGeneration = resolve; }),
+        onProgress(cb) { onProgress = cb; return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+
+    parent.querySelectorAll(".studio-action-btn")[0].dispatch("click");
+    await tick(0);
+    assert.strictEqual(parent.querySelectorAll(".studio-action-btn")[0].textContent, "studioGenerating");
+
+    const previewUrl = "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=1";
+    const previewFrameUrls = [
+      previewUrl,
+      "file:///C:/themes/buddy/assets/yawn-frame-2.png?_studioPreview=1",
+    ];
+    onProgress({ actionId: "yawn", stage: "written", previewUrl, previewFrameUrls });
+    await tick(0);
+
+    const firstCard = parent.querySelectorAll(".studio-action-card")[0];
+    const button = firstCard.querySelector(".studio-action-btn");
+    const badge = firstCard.querySelector(".studio-badge");
+    const preview = firstCard.querySelector(".studio-action-preview-animation");
+    assert.strictEqual(badge.textContent, "studioStatusDone");
+    assert.ok(badge.classList.contains("studio-badge-done"));
+    assert.strictEqual(button.textContent, "studioRegenerate");
+    assert.strictEqual(button.querySelector(".studio-btn-spinner"), null);
+    assert.ok(preview, "completed action should render an animated preview");
+    assert.strictEqual(preview.tagName, "SVG");
+    assert.strictEqual(preview.querySelectorAll("image").length, previewFrameUrls.length);
+    assert.strictEqual(preview.querySelectorAll("animate").length, previewFrameUrls.length);
+    assert.strictEqual(preview.querySelector("animate").getAttribute("dur"), "1200ms");
+    assert.strictEqual(preview.querySelector("animate").getAttribute("repeatCount"), "indefinite");
+
+    finishGeneration({ status: "ok" });
+    await tick(10);
+  });
+
+  it("uses the final IPC result when the written progress event is missed", async () => {
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        pickReference: async () => ({ status: "ok", path: "C:/pet.png", dataUrl: "data:image/png;base64,AA==" }),
+        generate: async () => ({
+          status: "ok",
+          result: {
+            actionId: "yawn",
+            previewUrl: "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=2",
+            previewFrameUrls: [
+              "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=2",
+              "file:///C:/themes/buddy/assets/yawn-frame-2.png?_studioPreview=2",
+            ],
+          },
+        }),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+    parent.querySelectorAll(".studio-action-btn")[0].dispatch("click");
+    await tick(10);
+
+    const firstCard = parent.querySelectorAll(".studio-action-card")[0];
+    const badge = firstCard.querySelector(".studio-badge");
+    assert.strictEqual(badge.textContent, "studioStatusDone");
+    assert.ok(badge.classList.contains("studio-badge-done"));
+    assert.strictEqual(firstCard.querySelector(".studio-action-btn").textContent, "studioRegenerate");
+    assert.strictEqual(firstCard.querySelector(".studio-action-preview-animation").tagName, "SVG");
+  });
+
+  it("restores generated cards after selecting the same pet reference again", async () => {
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        getActionStatuses: async () => ([{
+          actionId: "yawn",
+          stage: "written",
+          previewUrl: "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=3",
+          previewFrameUrls: [
+            "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=3",
+            "file:///C:/themes/buddy/assets/yawn-frame-2.png?_studioPreview=3",
+          ],
+        }]),
+        pickReference: async () => ({
+          status: "ok",
+          path: "C:/Buddy.png",
+          dataUrl: "data:image/png;base64,AA==",
+          suggestedName: "Buddy",
+        }),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+
+    const firstCard = parent.querySelectorAll(".studio-action-card")[0];
+    assert.strictEqual(firstCard.querySelector(".studio-badge").textContent, "studioStatusDone");
+    assert.strictEqual(firstCard.querySelector(".studio-action-btn").textContent, "studioRegenerate");
+    assert.strictEqual(firstCard.querySelector(".studio-action-preview-animation").tagName, "SVG");
+  });
+
+  it("activates only the action reported by generate-all progress", async () => {
+    let finishGeneration;
+    let onProgress;
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        pickReference: async () => ({ status: "ok", path: "C:/pet.png", dataUrl: "data:image/png;base64,AA==" }),
+        generate: () => new Promise((resolve) => { finishGeneration = resolve; }),
+        onProgress(cb) { onProgress = cb; return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+    findByText(parent, "button", "studioGenerateAll").dispatch("click");
+    await tick(0);
+
+    let buttons = parent.querySelectorAll(".studio-action-btn");
+    assert.strictEqual(buttons[0].textContent, "studioGenerate");
+    assert.strictEqual(buttons[1].textContent, "studioGenerate");
+
+    onProgress({ actionId: "yawn", stage: "start" });
+    await tick(0);
+    buttons = parent.querySelectorAll(".studio-action-btn");
+    assert.strictEqual(buttons[0].textContent, "studioGenerating");
+    assert.strictEqual(buttons[1].textContent, "studioGenerate");
+
+    finishGeneration({
+      status: "ok",
+      summary: { total: 2, ok: 0, failed: [{ actionId: "yawn", error: "boom" }], results: [], aborted: true, remaining: ["smooth-thumbsup"] },
+    });
+    await tick(10);
+  });
+
+  it("keeps the last valid preview when a single-action regeneration fails", async () => {
+    const previewUrl = "file:///C:/themes/buddy/assets/yawn-frame-1.png?_studioPreview=4";
+    const previewFrameUrls = [
+      previewUrl,
+      "file:///C:/themes/buddy/assets/yawn-frame-2.png?_studioPreview=4",
+    ];
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => [FAKE_ACTIONS[0]],
+        getActionStatuses: async () => ([{
+          actionId: "yawn",
+          stage: "written",
+          previewUrl,
+          previewFrameUrls,
+        }]),
+        pickReference: async () => ({ status: "ok", path: "C:/pet.png", dataUrl: "data:image/png;base64,AA==" }),
+        generate: async () => ({ status: "error", message: "provider rejected the retry" }),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+    findByText(parent, "button", "studioPickImage").dispatch("click");
+    await tick(10);
+    parent.querySelector(".studio-action-btn").dispatch("click");
+    await tick(10);
+
+    const card = parent.querySelector(".studio-action-card");
+    assert.strictEqual(card.querySelector(".studio-badge").textContent, "studioStatusFailed");
+    assert.strictEqual(card.querySelector(".studio-action-btn").textContent, "studioRegenerate");
+    assert.ok(card.querySelector(".studio-action-preview-animation"));
+    assert.strictEqual(card.querySelector(".studio-action-error").textContent, "provider rejected the retry");
+  });
+
+  it("shows completed action count beside one-click generation", async () => {
+    globalThis.window = {
+      studioAPI: {
+        getConfig: async () => ({ baseUrl: "https://api.example.com", model: "gpt-image-2", hasKey: true }),
+        getActions: async () => FAKE_ACTIONS,
+        getActionStatuses: async () => ([{
+          actionId: "yawn",
+          stage: "written",
+          previewUrl: "file:///C:/yawn.png",
+          previewFrameUrls: ["file:///C:/yawn.png"],
+        }]),
+        onProgress() { return () => {}; },
+      },
+    };
+
+    const parent = makeRoot();
+    const core = {
+      helpers: { t: (k) => k },
+      ops: {
+        requestRender: ({ content } = {}) => { if (content) doRender(); },
+        showToast: () => {},
+      },
+      tabs: {},
+    };
+    function doRender() {
+      parent.children.length = 0;
+      core.tabs.studio.render(parent, core);
+    }
+
+    loadStudioTab().init(core);
+    doRender();
+    await tick(10);
+
+    assert.ok(findByText(parent, "span", "1/2 studioStatusDone"));
+  });
+
   it("marks a single action failed when main returns an error result", async () => {
     const toasts = [];
     globalThis.window = {
@@ -248,7 +755,7 @@ describe("settings-tab-studio render stability", () => {
       },
     };
 
-    const parent = makeEl("div");
+    const parent = makeRoot();
     const core = {
       helpers: { t: (k) => k },
       ops: {

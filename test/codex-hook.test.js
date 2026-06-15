@@ -349,6 +349,34 @@ describe("Codex official hook", () => {
     assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "codex_session_role"), false);
   });
 
+  it("forwards Codex Auto-review from the transcript permissions context", () => {
+    withTempTranscript([
+      JSON.stringify({ type: "session_meta", payload: { originator: "Codex Desktop" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{
+            type: "input_text",
+            text: "<permissions instructions>\n`approvals_reviewer` is `auto_review`: review escalations automatically.\n</permissions instructions>",
+          }],
+        },
+      }),
+    ], (transcriptPath) => {
+      const body = buildPermissionBody({
+        hook_event_name: "PermissionRequest",
+        session_id: "s1",
+        transcript_path: transcriptPath,
+        permission_mode: "default",
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+      }, mockResolve);
+
+      assert.strictEqual(body.approvals_reviewer, "auto_review");
+    });
+  });
+
   it("carries Codex Desktop metadata on PermissionRequest payloads", () => {
     withTempTranscript([
       JSON.stringify({

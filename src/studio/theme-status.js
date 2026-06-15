@@ -5,6 +5,7 @@ const path = require("path");
 
 const { ACTIONS } = require("../companion/action-manifest");
 const { getStateFiles } = require("../theme-schema");
+const { getThemeReferenceFingerprint, hasCompleteActionAssets } = require("./generation-contract");
 
 const STUDIO_AUTHOR = "Clawd AI Studio";
 
@@ -22,11 +23,17 @@ function objectEntryUsesAsset(entry, assetFile) {
 }
 
 function isActionBound(theme, action, assetFile) {
-  if (action.category === "core") {
+  if (action.category === "core" || action.category === "sleep") {
     const states = action.trigger && Array.isArray(action.trigger.states)
       ? action.trigger.states
       : [];
     return states.length > 0 && states.every((state) => entryUsesAsset(theme.states && theme.states[state], assetFile));
+  }
+
+  if (action.category === "mini") {
+    const key = action.trigger && action.trigger.miniState;
+    const miniStates = theme.miniMode && theme.miniMode.states;
+    return !!key && entryUsesAsset(miniStates && miniStates[key], assetFile);
   }
 
   if (action.category === "idle-life") {
@@ -62,10 +69,13 @@ function getStudioThemeActionStatus(theme, themeDir) {
 
   const generatedActionIds = [];
   const missingActionIds = [];
+  const referenceSha256 = getThemeReferenceFingerprint(themeDir);
   for (const action of ACTIONS) {
     const assetFile = `${action.id}.svg`;
     const assetPath = themeDir ? path.join(themeDir, "assets", assetFile) : "";
-    if (isActionBound(theme, action, assetFile) && isRegularFile(assetPath)) {
+    if (isActionBound(theme, action, assetFile)
+      && isRegularFile(assetPath)
+      && hasCompleteActionAssets(themeDir, action, referenceSha256)) {
       generatedActionIds.push(action.id);
     } else {
       missingActionIds.push(action.id);

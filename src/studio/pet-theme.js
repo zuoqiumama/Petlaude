@@ -9,7 +9,55 @@
 const fs = require("fs");
 const path = require("path");
 
+const { FULL_SLEEP_REQUIRED_STATES, MINI_REQUIRED_STATES } = require("../theme-schema");
+
 const GEN_VIEWBOX = { x: 0, y: 0, width: 512, height: 512 };
+const GEN_LAYOUT = Object.freeze({
+  contentBox: Object.freeze({ x: 32, y: 24, width: 448, height: 456 }),
+  centerX: 256,
+  baselineY: 480,
+  visibleHeightRatio: 0.9,
+  baselineBottomRatio: 0.03,
+});
+
+// Generation-time miniMode config shared by every Studio pet. flipAssets lets
+// the renderer mirror the (left-leaning) peek poses for the left screen edge,
+// and offsetRatio 0.4 keeps the on-screen ~60% visible so the half-tucked peek
+// reads correctly when the window clips the rest off the border.
+const MINI_GEN_CONFIG = Object.freeze({ flipAssets: true, offsetRatio: 0.4 });
+
+function miniGenTimings() {
+  return {
+    minDisplay: { "mini-alert": 4000, "mini-happy": 4000, "mini-peek": 1500 },
+    autoReturn: { "mini-alert": 4000, "mini-happy": 4000, "mini-peek": 1500 },
+  };
+}
+
+function hasFiles(entry) {
+  return Array.isArray(entry) && entry.length > 0;
+}
+
+// Full sleep needs every transitional state; until all four exist keep "direct"
+// so the rebuilt theme stays schema-valid after each incremental generation.
+function sleepSequenceForStates(states) {
+  const full = FULL_SLEEP_REQUIRED_STATES.every((s) => hasFiles(states && states[s]));
+  return { mode: full ? "full" : "direct" };
+}
+
+// Mini mode only turns on once every required peek state exists — the validator
+// enforces the same set whenever supported=true, so supported is computed, never
+// guessed, keeping a partially generated mini set valid (and dormant).
+function buildGeneratedMiniMode(states) {
+  const next = states && typeof states === "object" ? states : {};
+  return {
+    supported: MINI_REQUIRED_STATES.every((s) => hasFiles(next[s])),
+    flipAssets: MINI_GEN_CONFIG.flipAssets,
+    offsetRatio: MINI_GEN_CONFIG.offsetRatio,
+    timings: miniGenTimings(),
+    glyphFlips: {},
+    states: next,
+  };
+}
 
 function slugify(value) {
   const source = String(value || "").trim();
@@ -38,11 +86,8 @@ function buildBaseTheme(name, referenceFile, previous) {
     description: "A custom pet generated from a reference image in Clawd AI Studio",
     viewBox: { ...GEN_VIEWBOX },
     layout: {
-      contentBox: { x: 32, y: 24, width: 448, height: 456 },
-      centerX: 256,
-      baselineY: 480,
-      visibleHeightRatio: 0.9,
-      baselineBottomRatio: 0.03,
+      ...GEN_LAYOUT,
+      contentBox: { ...GEN_LAYOUT.contentBox },
     },
     eyeTracking: { enabled: false, states: [] },
     states: {
@@ -91,6 +136,21 @@ function buildBaseTheme(name, referenceFile, previous) {
       }
     }
     if (statesChanged) theme.states = states;
+    // Full sleep sequence: the transitional states above ride the generic
+    // states preservation; flip the mode back on when all four are present.
+    theme.sleepSequence = sleepSequenceForStates(theme.states);
+    // Mini peek states live under miniMode.states (not top-level states), so
+    // carry the generated SVG bindings forward and recompute `supported`.
+    if (previous.miniMode && previous.miniMode.states && typeof previous.miniMode.states === "object") {
+      const miniStates = {};
+      for (const [key, entry] of Object.entries(previous.miniMode.states)) {
+        const generated = Array.isArray(entry)
+          && entry.length > 0
+          && entry.every((file) => typeof file === "string" && /\.svg$/i.test(file));
+        if (generated) miniStates[key] = [...entry];
+      }
+      if (Object.keys(miniStates).length > 0) theme.miniMode = buildGeneratedMiniMode(miniStates);
+    }
     const reactions = {};
     for (const key of ["rapidClick", "dragRelease"]) {
       const entry = previous.reactions && previous.reactions[key];
@@ -170,4 +230,11 @@ function ensurePetTheme({ name, referencePath, userThemesDir, templateDir }) {
   return { themeDir, themeId, assetsDir };
 }
 
-module.exports = { slugify, ensurePetTheme, GEN_VIEWBOX };
+module.exports = {
+  slugify,
+  ensurePetTheme,
+  GEN_VIEWBOX,
+  GEN_LAYOUT,
+  sleepSequenceForStates,
+  buildGeneratedMiniMode,
+};

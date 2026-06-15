@@ -3712,6 +3712,43 @@ html, body {
   font-weight: 500;
   color: var(--text-primary);
 }
+.studio-action-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 116px;
+  overflow: hidden;
+  border: 1px solid var(--row-border);
+  border-radius: 10px;
+  background-color: color-mix(in srgb, var(--panel-bg) 82%, var(--bg));
+  background-image:
+    linear-gradient(45deg, color-mix(in srgb, var(--border) 24%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--border) 24%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--border) 24%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--border) 24%, transparent) 75%);
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  background-size: 12px 12px;
+}
+.studio-action-preview-image,
+.studio-action-preview-animation {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+.studio-action-preview-animation image {
+  image-rendering: pixelated;
+}
+.studio-action-preview-empty {
+  max-width: 100px;
+  padding: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--panel-bg) 78%, transparent);
+  border-radius: 8px;
+}
 .studio-action-meta {
   font-size: 11px;
   color: var(--text-secondary);
@@ -3731,9 +3768,41 @@ html, body {
 .studio-badge-error {
   color: var(--toast-error);
 }
+.studio-action-error {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--toast-error);
+  word-break: break-word;
+}
 .studio-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   align-self: flex-start;
   padding: 5px 11px;
   font-size: 11px;
   border-radius: 9px;
+}
+.studio-action-btn-loading:disabled {
+  opacity: 0.72;
+  cursor: wait;
+}
+.studio-btn-spinner {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: studio-btn-spin 0.75s linear infinite;
+}
+@keyframes studio-btn-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .studio-btn-spinner {
+    animation: none;
+  }
 }

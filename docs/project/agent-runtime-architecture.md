@@ -121,6 +121,14 @@ opencode 权限气泡（event hook + 反向 bridge，非阻塞）：
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
+## Official Rate Limits
+
+Clawd keeps subscription quota data separate from its local token-based activity window:
+
+- Claude Code installs `hooks/claude-statusline.js` as a user-level `statusLine` relay. The relay reads the official `rate_limits.five_hour` and `rate_limits.seven_day` fields, posts them to `POST /rate-limits`, then runs the user's previous status line command with the original stdin. The previous configuration is stored in `~/.claude/clawd-statusline.json` and restored on uninstall.
+- Codex starts a persistent, read-only `codex app-server` process and calls `account/rateLimits/read` after the initialize handshake. It refreshes periodically and after `account/rateLimits/updated` notifications. `CODEX_HOME` is honored; without it, Clawd selects the active home from the normal user directory and the workspace-drive `AIData/.codex` candidate.
+- Normalized snapshots are cached in Electron `userData/official-rate-limits.json`. Dashboard rows show provider percentages and reset times. Expired official windows are ignored, and the existing local 5-hour estimate remains the fallback when no current official window is available.
+
 ## Multi-Agent Registry
 
 每个 agent 定义为一个配置模块，导出事件映射、进程名、能力声明（`capabilities` 含 `httpHook` / `permissionApproval` / `sessionEnd` / `subagent`）：

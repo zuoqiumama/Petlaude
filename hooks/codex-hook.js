@@ -26,6 +26,7 @@ const TOOL_MATCH_DEPTH_MAX = 6;
 const CODEX_PERMISSION_TIMEOUT_MS = 590000;
 const SESSION_META_READ_CHUNK_BYTES = 8192;
 const SESSION_META_READ_MAX_BYTES = 256 * 1024;
+const CODEX_APPROVALS_REVIEWERS = new Set(["user", "auto_review"]);
 
 const EVENT_TO_STATE = {
   SessionStart: "idle",
@@ -110,7 +111,7 @@ function parseSessionMetaLine(line) {
   return null;
 }
 
-function readFirstSessionMeta(transcriptPath) {
+function readFirstTranscriptMatch(transcriptPath, parseLine) {
   if (typeof transcriptPath !== "string" || !transcriptPath.trim()) return null;
   let fd;
   try {
@@ -131,8 +132,8 @@ function readFirstSessionMeta(transcriptPath) {
 
       let newlineIndex = buffered.indexOf("\n");
       while (newlineIndex >= 0) {
-        const meta = parseSessionMetaLine(buffered.slice(0, newlineIndex));
-        if (meta) return meta;
+        const match = parseLine(buffered.slice(0, newlineIndex));
+        if (match) return match;
         buffered = buffered.slice(newlineIndex + 1);
         newlineIndex = buffered.indexOf("\n");
       }
@@ -141,7 +142,7 @@ function readFirstSessionMeta(transcriptPath) {
     }
 
     buffered += decoder.end();
-    return parseSessionMetaLine(buffered);
+    return parseLine(buffered);
   } catch {
     return null;
   } finally {
@@ -150,6 +151,47 @@ function readFirstSessionMeta(transcriptPath) {
     }
   }
   return null;
+}
+
+function readFirstSessionMeta(transcriptPath) {
+  return readFirstTranscriptMatch(transcriptPath, parseSessionMetaLine);
+}
+
+function normalizeCodexApprovalsReviewer(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return CODEX_APPROVALS_REVIEWERS.has(normalized) ? normalized : null;
+}
+
+function parseCodexApprovalsReviewerLine(line) {
+  if (typeof line !== "string" || !line.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(line.replace(/\r$/, ""));
+  } catch {
+    return null;
+  }
+
+  if (parsed && parsed.type === "turn_context" && parsed.payload) {
+    const reviewer = normalizeCodexApprovalsReviewer(parsed.payload.approvals_reviewer);
+    if (reviewer) return reviewer;
+  }
+
+  const message = parsed && parsed.type === "response_item" ? parsed.payload : null;
+  if (!message || message.type !== "message" || message.role !== "developer") return null;
+  const content = Array.isArray(message.content) ? message.content : [];
+  const text = content
+    .map((item) => item && typeof item.text === "string" ? item.text : "")
+    .join("\n");
+  const permissionsBlock = text.match(/<permissions instructions>[\s\S]*?<\/permissions instructions>/i);
+  if (!permissionsBlock) return null;
+  return /`approvals_reviewer`\s+is\s+`auto_review`/i.test(permissionsBlock[0])
+    ? "auto_review"
+    : null;
+}
+
+function readCodexApprovalsReviewer(transcriptPath) {
+  return readFirstTranscriptMatch(transcriptPath, parseCodexApprovalsReviewerLine);
 }
 
 function applyCodexUpstreamFields(body, payload, sessionMeta) {
@@ -270,6 +312,8 @@ function buildPermissionBody(payload, resolve) {
     ? payload.tool_name
     : "Unknown";
   const sessionMeta = readFirstSessionMeta(payload.transcript_path);
+  const approvalsReviewer = normalizeCodexApprovalsReviewer(payload.approvals_reviewer)
+    || readCodexApprovalsReviewer(payload.transcript_path);
 
   const body = {
     agent_id: "codex",
@@ -285,6 +329,7 @@ function buildPermissionBody(payload, resolve) {
   if (typeof payload.permission_mode === "string" && payload.permission_mode) {
     body.permission_mode = payload.permission_mode;
   }
+  if (approvalsReviewer) body.approvals_reviewer = approvalsReviewer;
   if (typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
@@ -484,6 +529,7 @@ module.exports = {
   extractCodexSessionIdFromTranscriptPath,
   isCodexDesktopSession,
   normalizeCodexSessionId,
+  readCodexApprovalsReviewer,
   readFirstSessionMeta,
   requestCodexPermission,
   sanitizeCodexPermissionDecision,

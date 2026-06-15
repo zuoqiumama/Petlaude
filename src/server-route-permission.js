@@ -55,6 +55,15 @@ function shouldInterceptCodexPermission(ctx) {
   return ctx.isCodexPermissionInterceptEnabled();
 }
 
+function codexApprovalOwner(data) {
+  if (!data || typeof data !== "object") return null;
+  if (data.approvals_reviewer === "auto_review") return "auto-review";
+  if (data.permission_mode === "dontAsk" || data.permission_mode === "bypassPermissions") {
+    return data.permission_mode;
+  }
+  return null;
+}
+
 function shouldMuteCodexNativeNotificationSound(ctx) {
   if (typeof ctx.isCodexNativeNotificationSoundEnabled !== "function") return false;
   return ctx.isCodexNativeNotificationSoundEnabled() === false;
@@ -385,6 +394,14 @@ function handlePermissionPost(req, res, options) {
         if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled("codex")) {
           recordRequestHookEvent.droppedByDisabled();
           ctx.permLog(`codex disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendCodexPermissionNoDecision(res);
+          return;
+        }
+
+        const approvalOwner = codexApprovalOwner(data);
+        if (approvalOwner) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`codex ${approvalOwner} -> no decision, no user bubble (tool=${toolName})`);
           sendCodexPermissionNoDecision(res);
           return;
         }

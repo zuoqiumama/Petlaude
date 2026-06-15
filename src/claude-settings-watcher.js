@@ -6,6 +6,7 @@ const os = require("os");
 const { buildPermissionUrl } = require("../hooks/server-config");
 
 const HOOK_MARKER = "clawd-hook.js";
+const STATUSLINE_MARKER = "claude-statusline.js";
 const SETTINGS_FILENAME = "settings.json";
 const MANAGED_COMMAND_MARKERS = Object.freeze([
   HOOK_MARKER,
@@ -41,7 +42,7 @@ function entriesContainHttpHookUrl(entries, expectedUrl) {
   return false;
 }
 
-function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
+function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl, options = {}) {
   if (typeof rawSettings !== "string" || !rawSettings.trim()) return false;
 
   let parsed;
@@ -58,7 +59,14 @@ function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
     entriesContainCommandMarker(entries, HOOK_MARKER)
   ));
   const hasManagedPermissionHook = entriesContainHttpHookUrl(hooks.PermissionRequest, expectedPermissionUrl);
-  return !hasManagedCommandHook || !hasManagedPermissionHook;
+  const hasManagedStatusLine = Boolean(
+    parsed.statusLine
+    && typeof parsed.statusLine.command === "string"
+    && parsed.statusLine.command.includes(STATUSLINE_MARKER),
+  );
+  return !hasManagedCommandHook
+    || !hasManagedPermissionHook
+    || (options.requireStatusLineRelay === true && !hasManagedStatusLine);
 }
 
 function escapeRegExp(value) {
@@ -219,7 +227,9 @@ function createClaudeSettingsWatcher(ctx = {}) {
       const seedRaw = fsApi.readFileSync(settingsPath, "utf-8");
       const seedPort = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
       const seedExpectedPermissionUrl = buildPermissionUrl(seedPort);
-      if (!settingsNeedClaudeHookResync(seedRaw, seedExpectedPermissionUrl)) {
+      if (!settingsNeedClaudeHookResync(seedRaw, seedExpectedPermissionUrl, {
+        requireStatusLineRelay: ctx.requireClaudeStatusLineRelay === true,
+      })) {
         lastTrustedSnapshot = takeSnapshot(seedRaw);
       }
     } catch (err) {
@@ -240,7 +250,9 @@ function createClaudeSettingsWatcher(ctx = {}) {
             const port = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
             const expectedPermissionUrl = buildPermissionUrl(port);
             const currentSnapshot = takeSnapshot(raw);
-            if (settingsNeedClaudeHookResync(raw, expectedPermissionUrl)) {
+            if (settingsNeedClaudeHookResync(raw, expectedPermissionUrl, {
+              requireStatusLineRelay: ctx.requireClaudeStatusLineRelay === true,
+            })) {
               // Snapshot guard — refuse to resync when settings.json shrank too much,
               // since an external CLI may have minimized it and re-registering would
               // drop third-party hooks. See PR description for the production race.
@@ -282,6 +294,7 @@ function createClaudeSettingsWatcher(ctx = {}) {
 
 module.exports = {
   HOOK_MARKER,
+  STATUSLINE_MARKER,
   SETTINGS_FILENAME,
   entriesContainCommandMarker,
   entriesContainHttpHookUrl,

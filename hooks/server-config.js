@@ -10,6 +10,7 @@ const SERVER_PORT_COUNT = 5;
 const SERVER_PORTS = Array.from({ length: SERVER_PORT_COUNT }, (_, i) => DEFAULT_SERVER_PORT + i);
 const STATE_PATH = "/state";
 const PERMISSION_PATH = "/permission";
+const RATE_LIMITS_PATH = "/rate-limits";
 const RUNTIME_CONFIG_PATH = path.join(os.homedir(), ".clawd", "runtime.json");
 const DEFAULT_HOOK_HTTP_TIMEOUT_MS = 100;
 const REMOTE_HOOK_HTTP_TIMEOUT_MS = 5000;
@@ -310,6 +311,50 @@ function postStateToRunningServer(body, options, callback) {
   };
 
   tryDirect();
+}
+
+function postRateLimitsToPort(port, payload, timeoutMs, callback, options = {}) {
+  const httpRequest = options.httpRequest || http.request;
+  const req = httpRequest(
+    {
+      hostname: "127.0.0.1",
+      port,
+      path: RATE_LIMITS_PATH,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+      },
+      timeout: timeoutMs,
+    },
+    (res) => {
+      if (readHeader(res, CLAWD_SERVER_HEADER) === CLAWD_SERVER_ID) {
+        res.resume();
+        callback(true, port);
+        return;
+      }
+      let responseBody = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        if (responseBody.length < 256) responseBody += chunk;
+      });
+      res.on("end", () => callback(isClawdResponse(res, responseBody), port));
+    }
+  );
+  req.on("error", () => callback(false, port));
+  req.on("timeout", () => {
+    req.destroy();
+    callback(false, port);
+  });
+  req.end(payload);
+}
+
+function postRateLimitsToRunningServer(body, options, callback) {
+  const rateLimitOptions = options || {};
+  return postStateToRunningServer(body, {
+    ...rateLimitOptions,
+    postStateToPort: rateLimitOptions.postRateLimitsToPort || postRateLimitsToPort,
+  }, callback);
 }
 
 function postPermissionToPort(port, payload, timeoutMs, callback, options = {}) {
@@ -833,6 +878,7 @@ module.exports = {
   DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
   PERMISSION_PATH,
+  RATE_LIMITS_PATH,
   REMOTE_HOOK_HTTP_TIMEOUT_MS,
   RUNTIME_CONFIG_PATH,
   SERVER_PORTS,
@@ -845,6 +891,8 @@ module.exports = {
   getStatePostTimeoutMs,
   postPermissionToPort,
   postPermissionToRunningServer,
+  postRateLimitsToPort,
+  postRateLimitsToRunningServer,
   postStateToRunningServer,
   probePort,
   readHostPrefix,

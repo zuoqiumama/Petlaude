@@ -95,6 +95,87 @@ describe("studio-ipc", () => {
     assert.ok(fs.existsSync(path.join(deps.userThemesDir, "buddy", "assets", "yawn.svg")));
   });
 
+  it("uses a renderable frame as the written preview and keeps all animation frames", async () => {
+    const sent = [];
+    const settingsWindow = {
+      isDestroyed: () => false,
+      webContents: { send: (channel, payload) => sent.push({ channel, payload }) },
+    };
+    const { ipcMain } = register({ getSettingsWindow: () => settingsWindow });
+    const ref = writeRef(tmpDir());
+
+    const res = await ipcMain.invoke("studio:generate", {
+      actionId: "yawn",
+      petName: "Buddy",
+      referencePath: ref,
+    });
+
+    assert.strictEqual(res.status, "ok");
+    const written = sent.find((entry) => (
+      entry.channel === "studio:progress"
+      && entry.payload.actionId === "yawn"
+      && entry.payload.stage === "written"
+    ));
+    assert.ok(written, "written progress should be sent to Settings");
+    assert.match(written.payload.previewUrl, /^file:\/\//);
+    assert.match(written.payload.previewUrl, /yawn-frame-1\.png/);
+    assert.match(written.payload.previewUrl, /[?&]_studioPreview=/);
+    assert.ok(written.payload.previewFrameUrls.length > 1);
+    assert.ok(written.payload.previewFrameUrls.every((url) => /yawn-frame-\d+\.png/.test(url)));
+    assert.ok(written.payload.previewFrameUrls.every((url) => /[?&]_studioPreview=/.test(url)));
+  });
+
+  it("returns preview URLs for successful generate-all results", async () => {
+    const { ipcMain } = register();
+    const ref = writeRef(tmpDir());
+    const res = await ipcMain.invoke("studio:generate", {
+      mode: "all",
+      petName: "Buddy",
+      referencePath: ref,
+    });
+
+    assert.strictEqual(res.status, "ok");
+    assert.strictEqual(res.summary.results.length, res.summary.ok);
+    assert.ok(res.summary.results.every((result) => result.previewUrl));
+    assert.ok(res.summary.results.every((result) => result.previewFrameUrls.length > 1));
+  });
+
+  it("restores completed action previews from an existing Studio theme", async () => {
+    const { ipcMain } = register();
+    const ref = writeRef(tmpDir());
+    await ipcMain.invoke("studio:generate", {
+      actionId: "yawn",
+      petName: "Buddy",
+      referencePath: ref,
+    });
+
+    const statuses = await ipcMain.invoke("studio:get-action-statuses", { petName: "Buddy" });
+    assert.deepStrictEqual(statuses.map((status) => status.actionId), ["yawn"]);
+    assert.strictEqual(statuses[0].stage, "written");
+    assert.match(statuses[0].previewUrl, /yawn-frame-1\.png/);
+    assert.ok(statuses[0].previewFrameUrls.length > 1);
+    const latest = await ipcMain.invoke("studio:get-action-statuses", {});
+    assert.strictEqual(latest[0].petName, "Buddy");
+  });
+
+  it("does not restore actions generated from a different reference image", async () => {
+    const { ipcMain, deps } = register();
+    const ref = writeRef(tmpDir());
+    await ipcMain.invoke("studio:generate", {
+      actionId: "yawn",
+      petName: "Buddy",
+      referencePath: ref,
+    });
+
+    fs.writeFileSync(
+      path.join(deps.userThemesDir, "buddy", "assets", "reference.png"),
+      Buffer.from("different-pet-reference"),
+    );
+
+    const statuses = await ipcMain.invoke("studio:get-action-statuses", { petName: "Buddy" });
+    assert.deepStrictEqual(statuses, []);
+  });
+
   it("generate rejects concurrent runs", async () => {
     let release;
     const gate = new Promise((r) => { release = r; });
@@ -127,6 +208,55 @@ describe("studio-ipc", () => {
     const bad = register({ httpGet: async () => ({ status: 401 }) });
     const res = await bad.ipcMain.invoke("studio:test-config");
     assert.strictEqual(res.status, "error");
+  });
+
+  it("test-config does not report arbitrary HTTP failures as connected", async () => {
+    const { ipcMain } = register({ httpGet: async () => ({ status: 500 }) });
+    const res = await ipcMain.invoke("studio:test-config");
+    assert.deepStrictEqual(res, {
+      status: "error",
+      message: "connection test failed (HTTP 500)",
+    });
+  });
+
+  it("test-config sends the current draft URL and key without saving them", async () => {
+    const requests = [];
+    const { ipcMain } = register({
+      httpGet: async (url, headers) => {
+        requests.push({ url, headers });
+        return { status: 200 };
+      },
+    });
+
+    const res = await ipcMain.invoke("studio:test-config", {
+      baseUrl: "https://draft.example.com/v1/",
+      model: "draft-image-model",
+      apiKey: "sk-draft",
+    });
+
+    assert.deepStrictEqual(res, { status: "ok" });
+    assert.deepStrictEqual(requests, [{
+      url: "https://draft.example.com/v1/models",
+      headers: { Authorization: "Bearer sk-draft" },
+    }]);
+  });
+
+  it("test-config keeps the saved key when the draft key is blank", async () => {
+    const requests = [];
+    const { ipcMain } = register({
+      httpGet: async (url, headers) => {
+        requests.push({ url, headers });
+        return { status: 200 };
+      },
+    });
+
+    await ipcMain.invoke("studio:test-config", {
+      baseUrl: "https://draft.example.com",
+      model: "draft-image-model",
+      apiKey: "",
+    });
+
+    assert.strictEqual(requests[0].headers.Authorization, "Bearer sk-x");
   });
 
   it("use-current-pet errors when no active-theme hook is wired", async () => {

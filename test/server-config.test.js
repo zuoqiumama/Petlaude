@@ -20,6 +20,30 @@ afterEach(() => {
 });
 
 describe("server-config helpers", () => {
+  it("posts official rate limits to the dedicated local endpoint", async () => {
+    const calls = [];
+    const result = await new Promise((resolve) => {
+      serverConfig.postRateLimitsToRunningServer(
+        { agent_id: "claude-code", rate_limits: { five_hour: {} } },
+        {
+          preferredPort: 23333,
+          runtimePort: null,
+          postRateLimitsToPort(port, payload, timeoutMs, callback) {
+            calls.push({ port, payload: JSON.parse(payload), timeoutMs });
+            callback(true, port);
+          },
+        },
+        (ok, port) => resolve({ ok, port })
+      );
+    });
+
+    assert.deepStrictEqual(result, { ok: true, port: 23333 });
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].port, 23333);
+    assert.strictEqual(calls[0].payload.agent_id, "claude-code");
+    assert.ok(calls[0].timeoutMs >= 100);
+  });
+
   it("clearRuntimeConfig removes runtime.json when present", () => {
     const tmpHome = makeTempHome();
     const runtimeDir = path.join(tmpHome, ".clawd");

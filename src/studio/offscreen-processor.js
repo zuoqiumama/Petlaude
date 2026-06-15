@@ -29,31 +29,62 @@ function cellToDataUrl(cell) {
 }
 
 async function processStrip(payload) {
-  const { stripDataUrl, cols, rows, key, threshold, cell } = payload;
+  const { stripDataUrl, cols, rows, key, threshold, cell, preserveScale, stabilize, anchor } = payload;
   const im = await decode(stripDataUrl);
   cv.width = im.naturalWidth;
   cv.height = im.naturalHeight;
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.drawImage(im, 0, 0);
   const raw = ctx.getImageData(0, 0, cv.width, cv.height);
-  const cells = window.ClawdFrameExtract.extractGrid(
+  const extractor = stabilize
+    ? window.ClawdFrameExtract.extractGridStabilized
+    : (preserveScale
+      ? window.ClawdFrameExtract.extractGridPreservingScale
+      : window.ClawdFrameExtract.extractGrid);
+  const args = [
     { data: raw.data, width: raw.width, height: raw.height },
     cols, rows, key, threshold, cell, cell,
-  );
+  ];
+  if (stabilize) args.push(anchor || {});
+  const cells = extractor(...args);
   const frames = cells.map((c) => cellToDataUrl(c.cell));
-  const report = cells.map((c) => ({ row: c.row, col: c.col, rawW: c.rawW, rawH: c.rawH, opaquePct: c.opaquePct }));
+  const report = cells.map((c) => ({
+    row: c.row,
+    col: c.col,
+    rawW: c.rawW,
+    rawH: c.rawH,
+    opaquePct: c.opaquePct,
+    anchorX: c.anchorX,
+    anchorY: c.anchorY,
+    shiftX: c.shiftX,
+    shiftY: c.shiftY,
+    edgeTouchPct: c.edgeTouchPct,
+    discardedPct: c.discardedPct,
+    backgroundResidualPct: c.backgroundResidualPct,
+    backgroundRgb: c.backgroundRgb,
+    lineArtifact: c.lineArtifact,
+  }));
   return { frames, report };
 }
 
 function makeGuide(payload) {
-  const { cols, rows, cell, safe = 26 } = payload;
+  const { cols, rows, cell, safe = 26, key, threshold } = payload;
   // Guide cells may be non-square (cellW/cellH) so they match the output
   // size's aspect; `cell` remains the square fallback.
   const cellW = payload.cellW || cell;
   const cellH = payload.cellH || cell;
   cv.width = cols * cellW;
   cv.height = rows * cellH;
-  window.ClawdLayoutGuide.drawLayoutGuide(ctx, { cols, rows, cellW, cellH, safeX: safe, safeY: safe });
+  window.ClawdLayoutGuide.drawLayoutGuide(ctx, {
+    cols,
+    rows,
+    cellW,
+    cellH,
+    safeX: safe,
+    safeY: safe,
+    key,
+    threshold,
+  });
   return { dataUrl: cv.toDataURL("image/png") };
 }
 
@@ -61,7 +92,7 @@ function makeGuide(payload) {
 // <= maxSize). Bilinear smoothing is fine here — this is the model's identity
 // reference, not a pixel-perfect asset.
 async function prepareReference(payload) {
-  const { dataUrl, maxSize = 768 } = payload;
+  const { dataUrl, maxSize = 1024 } = payload;
   const im = await decode(dataUrl);
   const scale = Math.min(1, maxSize / Math.max(im.naturalWidth, im.naturalHeight));
   const w = Math.max(1, Math.round(im.naturalWidth * scale));

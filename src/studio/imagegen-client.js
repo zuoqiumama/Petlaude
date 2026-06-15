@@ -103,6 +103,27 @@ function parseImageSource(text) {
   throw typedError("IMAGEGEN_NO_IMAGE", "response contained no image payload");
 }
 
+// Pull a short, human-readable reason out of an error response body. The
+// response body never carries the API key (only the request's Authorization
+// header does, which is never included here), so it is safe to surface — and it
+// is usually the actual cause of a 400: moderation, unsupported size, a rejected
+// input image, a rate limit, an unknown model, … Handles OpenAI-style
+// { error: { message } }, flat { error } / { message }, and raw text.
+function summarizeErrorBody(text) {
+  const raw = String(text == null ? "" : text).trim();
+  if (!raw) return "";
+  let message = raw;
+  try {
+    const json = JSON.parse(raw);
+    const err = json && json.error;
+    if (err && typeof err === "object" && typeof err.message === "string") message = err.message;
+    else if (typeof err === "string") message = err;
+    else if (json && typeof json.message === "string") message = json.message;
+  } catch { /* not JSON — fall back to the raw text */ }
+  message = message.replace(/\s+/g, " ").trim();
+  return message.length > 300 ? `${message.slice(0, 300)}…` : message;
+}
+
 function parseDataUrl(value, index) {
   const match = /^data:(image\/(?:png|jpeg|jpg|webp));base64,([a-z0-9+/=\r\n]+)$/i.exec(String(value || ""));
   if (!match) throw typedError("IMAGEGEN_BAD_IMAGE", `images[${index}] must be a base64 image data URL`);
@@ -113,7 +134,7 @@ function parseDataUrl(value, index) {
   return { mime, data, filename: `reference-${index + 1}.${ext}` };
 }
 
-function buildMultipartBody({ model, prompt, size, images }) {
+function buildMultipartBody({ model, prompt, size, quality, background, images }) {
   const boundary = `----clawd-studio-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const parts = [];
   function push(value) {
@@ -126,6 +147,8 @@ function buildMultipartBody({ model, prompt, size, images }) {
   field("prompt", prompt);
   field("size", size);
   field("output_format", "png");
+  if (quality) field("quality", quality);
+  if (background) field("background", background);
   images.forEach((value, index) => {
     const image = parseDataUrl(value, index);
     push(`--${boundary}\r\nContent-Disposition: form-data; name="image[]"; filename="${image.filename}"\r\nContent-Type: ${image.mime}\r\n\r\n`);
@@ -158,17 +181,22 @@ async function generateImage(params = {}, deps = {}) {
 
   const images = Array.isArray(params.images) ? params.images.filter(Boolean) : [];
   const size = params.size || "1024x1024";
+  const quality = params.quality || null;
+  const background = params.background || null;
   let endpoint;
   let body;
   let contentType;
   if (images.length > 0) {
     endpoint = "edits";
-    const multipart = buildMultipartBody({ model, prompt, size, images });
+    const multipart = buildMultipartBody({ model, prompt, size, quality, background, images });
     body = multipart.body;
     contentType = multipart.contentType;
   } else {
     endpoint = "generations";
-    body = JSON.stringify({ model, prompt, size, output_format: "png" });
+    const request = { model, prompt, size, output_format: "png" };
+    if (quality) request.quality = quality;
+    if (background) request.background = background;
+    body = JSON.stringify(request);
     contentType = "application/json";
   }
 
@@ -180,17 +208,19 @@ async function generateImage(params = {}, deps = {}) {
 
   if (!res || res.status < 200 || res.status >= 300) {
     const status = res ? res.status : "no response";
-    // Note: deliberately does not include the request (which carries the key).
+    // Surface the provider's own error detail (truncated). Note: deliberately
+    // never includes the request, which carries the key — only the response body.
+    const detail = res ? summarizeErrorBody(res.text) : "";
     if (res && res.status === 404) {
       // Most actionable case: the path resolved but the provider has no image
       // endpoint there (a text-only OpenAI-compatible API), or the model is
       // unknown. baseUrl /v1 doubling is already handled by normalizeBaseUrl.
       throw typedError(
         "IMAGEGEN_HTTP_ERROR",
-        "image generation endpoint not found (HTTP 404) — check that the provider supports image generation and the model name is correct",
+        `image generation endpoint not found (HTTP 404) — check that the provider supports image generation and the model name is correct${detail ? ` — ${detail}` : ""}`,
       );
     }
-    throw typedError("IMAGEGEN_HTTP_ERROR", `image generation failed (HTTP ${status})`);
+    throw typedError("IMAGEGEN_HTTP_ERROR", `image generation failed (HTTP ${status})${detail ? `: ${detail}` : ""}`);
   }
   return parseImageSource(res.text);
 }

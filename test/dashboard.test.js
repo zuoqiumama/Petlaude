@@ -275,6 +275,20 @@ describe("dashboard window", () => {
     assert.doesNotMatch(`${rendererSource}\n${htmlSource}`, /Tokens \+ Time/);
   });
 
+  it("renders official five-hour and weekly limits before local estimates", () => {
+    const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
+
+    assert.match(rendererSource, /officialRateLimits/);
+    assert.match(rendererSource, /usedPercent/);
+    assert.match(rendererSource, /usageRateLimitsTitle/);
+    assert.match(rendererSource, /usageRateLimitFiveHour/);
+    assert.match(rendererSource, /usageRateLimitSevenDay/);
+    assert.match(rendererSource, /usageRateLimitOfficial/);
+    assert.match(rendererSource, /createEstimatedRateWindowRows/);
+    assert.match(rendererSource, /entry\.resetsAt > now/);
+    assert.doesNotMatch(rendererSource, /entry\.elapsedRatio[^\n]*official/);
+  });
+
   it("keeps Cost Analysis model-based instead of mixing provider totals into the same table", () => {
     const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
     const costPanelSource = rendererSource.match(/function createCostAnalysisPanel[\s\S]*?function contextRowsFromUsage/)[0];
